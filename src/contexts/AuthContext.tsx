@@ -6,40 +6,8 @@ import type { User, AuthContextType } from "@/src/types/index";
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Dummy users for demo
-const DUMMY_USERS: Record<string, User & { password: string }> = {
-  "admin@furniture.com": {
-    id: "admin-1",
-    name: "Admin User",
-    email: "admin@furniture.com",
-    phone: "+1234567890",
-    role: "admin",
-    password: "admin123",
-    avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=admin",
-    createdAt: new Date().toISOString(),
-  },
-  "employee@furniture.com": {
-    id: "emp-1",
-    name: "John Sales",
-    email: "employee@furniture.com",
-    phone: "+1234567891",
-    role: "employee",
-    password: "emp123",
-    avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=john",
-    target: 50000,
-    createdAt: new Date().toISOString(),
-  },
-  "customer@furniture.com": {
-    id: "cust-1",
-    name: "Customer User",
-    email: "customer@furniture.com",
-    phone: "+1234567892",
-    role: "customer",
-    password: "cust123",
-    avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=customer",
-    createdAt: new Date().toISOString(),
-  },
-};
+const SCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycbxVMOglX1D5V_Vbno5gx1E1Zw0jd2YjWQqDbdRpQA-l2Z_UzLaaTZxHyPu0ZLKQVxBu/exec";
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -66,17 +34,105 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(false);
   }, []);
 
-  const login = (email: string, password: string) => {
-    const dummyUser = DUMMY_USERS[email];
-    if (dummyUser && dummyUser.password === password) {
-      const { password: _, ...userWithoutPassword } = dummyUser;
-      setUser(userWithoutPassword);
-      setIsAuthenticated(true);
-      localStorage.setItem("currentUser", JSON.stringify(userWithoutPassword));
-      console.log("✅ Login successful:", userWithoutPassword);
-    } else {
-      console.log("❌ Login failed for:", email);
-      throw new Error("Invalid credentials");
+  const login = async (username: string, password: string) => {
+    try {
+      // Fetch users from the "Login" sheet
+      const response = await fetch(`${SCRIPT_URL}?sheet=Login`);
+      const json = await response.json();
+
+      if (!json.success || !Array.isArray(json.data)) {
+        throw new Error("Failed to fetch user directory");
+      }
+
+      // Sheet columns based on user image:
+      // Row[0]: Name
+      // Row[1]: User Name
+      // Row[2]: Passwords
+      // Row[3]: Role
+
+      const rows: any[][] = json.data.slice(1); // Skip header
+      console.log(`Sheet returned ${rows.length} users.`);
+      if (rows.length > 0) {
+        console.log("First row sample:", rows[0]);
+      }
+      console.log("Attempting login for:", username);
+      let usernameFound = false;
+
+      const matchedRow = rows.find((row) => {
+        const rowAny = row as any;
+        // Check both Name (Col 0) and User Name (Col 1)
+        const sheetName = String(rowAny[0] || rowAny["Name"] || "").trim();
+        const sheetUsername = String(rowAny[1] || rowAny["User Name"] || "").trim();
+
+        // Try multiple variations of the password column header
+        const sheetPassword = String(
+          rowAny[2] ||
+          rowAny["Passwords"] ||
+          rowAny["Password"] ||
+          rowAny["password"] ||
+          ""
+        ).trim();
+
+        const inputLower = username.toLowerCase().trim();
+
+        // Match against Name (Col A) OR User Name (Col B)
+        const isNameMatch = sheetName.toLowerCase() === inputLower;
+        const isUsernameMatch = sheetUsername.toLowerCase() === inputLower;
+
+        if (isNameMatch || isUsernameMatch) {
+          usernameFound = true;
+          // Strict password check
+          const isPasswordMatch = sheetPassword === password.trim();
+          if (!isPasswordMatch) {
+            console.warn(`❌ Password mismatch for user [${sheetUsername}]. Input [${password}] != Sheet [${sheetPassword}]`);
+            console.warn("Row data for debug:", JSON.stringify(rowAny));
+          }
+          return isPasswordMatch;
+        }
+        return false;
+      });
+
+      if (matchedRow) {
+        const rowAny = matchedRow as any;
+        const name = String(rowAny[0] || rowAny["Name"] || "User");
+        const roleStr = String(rowAny[3] || rowAny["Role"] || "employee").toLowerCase();
+
+        console.log("Found user row:", rowAny);
+        console.log("Extracted Name:", name);
+        console.log("Extracted Role String:", roleStr);
+
+        // Normalize role to "admin" | "employee" | "customer"
+        let role: "admin" | "employee" | "customer" = "employee";
+        if (roleStr.includes("admin")) role = "admin";
+        else if (roleStr.includes("customer")) role = "customer";
+        else role = "employee"; // "user" falls back to employee
+
+        const validUser: User = {
+          id: `user-${username}`,
+          name: name,
+          email: `${username}@furniture.com`,
+          phone: "",
+          role: role,
+          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`,
+          createdAt: new Date().toISOString(),
+        };
+
+        setUser(validUser);
+        setIsAuthenticated(true);
+        localStorage.setItem("currentUser", JSON.stringify(validUser));
+        console.log("✅ Login successful via Sheet:", validUser);
+      } else {
+        if (usernameFound) {
+          console.warn("❌ Login failed: Password incorrect for", username);
+          throw new Error("Password incorrect");
+        } else {
+          console.warn("❌ Login failed: Username not found for", username);
+          throw new Error("Username not found");
+        }
+      }
+    } catch (error) {
+      console.error("Login error:", error);
+      throw error;
     }
   };
 

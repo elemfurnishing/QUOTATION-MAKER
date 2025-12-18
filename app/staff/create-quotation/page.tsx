@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useEmployee } from "@/src/contexts/EmployeeContext";
 import { useAdmin } from "@/src/contexts/AdminContext";
 import { useAuth } from "@/src/contexts/AuthContext";
@@ -14,12 +14,392 @@ export default function CreateQuotationPage() {
   const { products, customers } = useAdmin(); // Fixed: Fetch customers from useAdmin for consistency
   const { user } = useAuth();
 
+  const SCRIPT_URL =
+    "https://script.google.com/macros/s/AKfycbxVMOglX1D5V_Vbno5gx1E1Zw0jd2YjWQqDbdRpQA-l2Z_UzLaaTZxHyPu0ZLKQVxBu/exec";
+  const DRIVE_FOLDER_ID = "1OjDF5Jr2O5KtRTmxRcSa-ApFuFtyCOxe";
+  const QUOTATION_SHEET_NAME = "Quotation";
+  const QUOTATION_LOG_SHEET_NAME = "Quotation";
+  const INVENTORY_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyr8QBIGE3jlMqm3w4r3f-jvRKTJdUKP0Tc4jDITpadSJqQbL8JOC_E6TLXr0xxBJKknA/exec";
+  const INVENTORY_SPREADSHEET_ID = "1rKr7wOCQdDRunIvSdBFnGVy1VQGgQvcwXeFqVD9wuFM";
+  const INVENTORY_SHEET_NAME = "Inventory";
+
   const [selectedCustomer, setSelectedCustomer] = useState("");
   const [items, setItems] = useState<QuotationItem[]>([]);
   const [tax, setTax] = useState(18);
   const [showCamera, setShowCamera] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("");
+  const [inventory, setInventory] = useState<any[]>([]);
+  const [loadingInventory, setLoadingInventory] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Fetch Inventory on Mount
+  useEffect(() => {
+    const fetchInventory = async () => {
+      setLoadingInventory(true);
+      try {
+        const url = `${INVENTORY_SCRIPT_URL}?spreadsheetId=${INVENTORY_SPREADSHEET_ID}&sheet=${INVENTORY_SHEET_NAME}`;
+        console.log("Fetching Inventory:", url);
+        const res = await fetch(url);
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          // Assume Row 1 is header (1-based in sheet, 0-based in array? usually API returns 2D array including header)
+          const rows = json.data.slice(1);
+          if (rows.length > 0) {
+            console.log("Sample Inventory Row 0:", rows[0]);
+          }
+          const products = rows.map((r: any[]) => {
+            const rawPrice = r[9]; // Col J (Amount) is index 9
+            const parsedPrice = typeof rawPrice === 'number' ? rawPrice : parseFloat(String(rawPrice || "0").replace(/[^0-9.-]+/g, ""));
+            return {
+              code: String(r[4] || "").trim(), // Col E (Index 4)
+              name: String(r[3] || "").trim(), // Col D (Index 3)
+              price: isNaN(parsedPrice) ? 0 : parsedPrice, // Col J (Index 9)
+              image: String(r[2] || "").trim(), // Col C (Index 2)
+            };
+          }).filter((p: any) => p.code);
+
+          if (products.length > 0) {
+            console.log("Sample Parsed Product:", products[0]);
+          }
+          setInventory(products);
+          console.log("Inventory Loaded:", products.length, "items");
+        }
+      } catch (e) {
+        console.error("Failed to fetch inventory:", e);
+      } finally {
+        setLoadingInventory(false);
+      }
+    };
+    fetchInventory();
+  }, []);
+
+  const handleProductCodeSearch = (itemId: string, code: string) => {
+    alert(`🔍 Search triggered! Code: "${code}"`);
+    if (!code) return;
+    const searchCode = code.trim().toLowerCase();
+    console.log("Searching for code:", searchCode);
+    console.log("Inventory size:", inventory.length);
+    console.log("Current Inventory (first 3):", inventory.slice(0, 3));
+
+    if (inventory.length === 0) {
+      alert("⚠️ Inventory not loaded yet! Please wait.");
+      return;
+    }
+
+    const match = inventory.find((p) => p.code.toLowerCase() === searchCode);
+    console.log("Match found:", match);
+
+    if (match) {
+      console.log("Updating item with:", match);
+      alert(`✅ Found: ${match.name}\nPrice: ₹${match.price}\nImage: ${match.image ? 'Yes' : 'No'}`);
+      updateItem(itemId, {
+        customTitle: match.name,
+        price: Number(match.price),
+        customPhoto: match.image || undefined
+      });
+    } else {
+      alert("Product code not found in inventory.");
+    }
+  };
+
+  const parseDataUrl = (dataUrl: string) => {
+    const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
+    if (!match) {
+      return null;
+    }
+    return { mimeType: match[1], base64Data: match[2] };
+  };
+
+  const getDisplayableImageUrl = (url: string | null | undefined): string | null => {
+    if (!url) return null;
+
+    try {
+      // 1. Match /file/d/ID
+      const directMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      if (directMatch && directMatch[1]) {
+        return `https://drive.google.com/thumbnail?id=${directMatch[1]}&sz=w400`;
+      }
+
+      // 2. Match ?id=ID or &id=ID
+      const ucMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+      if (ucMatch && ucMatch[1]) {
+        return `https://drive.google.com/thumbnail?id=${ucMatch[1]}&sz=w400`;
+      }
+
+      // 3. Match open?id=ID
+      const openMatch = url.match(/open\?id=([a-zA-Z0-9_-]+)/);
+      if (openMatch && openMatch[1]) {
+        return `https://drive.google.com/thumbnail?id=${openMatch[1]}&sz=w400`;
+      }
+
+      // 4. Already a thumbnail link
+      if (url.includes("thumbnail?id=")) {
+        return url;
+      }
+
+      // 5. Fallback: match any long ID-like string
+      const anyIdMatch = url.match(/([a-zA-Z0-9_-]{25,})/);
+      if (anyIdMatch && anyIdMatch[1]) {
+        return `https://drive.google.com/thumbnail?id=${anyIdMatch[1]}&sz=w400`;
+      }
+
+      return url;
+    } catch (e) {
+      console.error("Error processing image URL:", url, e);
+      return url;
+    }
+  };
+
+  const appendQuotationLogRow = async (rowData: any[]) => {
+    console.log("=== APPEND QUOTATION LOG ROW STARTED ===");
+    console.log("📤 Quotation log rowData:", rowData);
+    const params = new URLSearchParams();
+    params.append("action", "insert");
+    params.append("sheetName", QUOTATION_LOG_SHEET_NAME);
+    params.append("rowData", JSON.stringify(rowData));
+
+    const res = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    });
+
+    console.log("📡 Quotation insert response:", {
+      status: res.status,
+      statusText: res.statusText,
+      ok: res.ok,
+    });
+
+    const responseText = await res.text();
+    console.log("📄 Raw quotation insert response:", responseText);
+
+    let json: any = null;
+    try {
+      json = JSON.parse(responseText);
+      console.log("📋 Parsed quotation insert response:", json);
+    } catch {
+      // Apps Script sometimes returns HTML (e.g. auth / deployment errors)
+      throw new Error(
+        `Quotation insert returned non-JSON response (HTTP ${res.status
+        }). Check Apps Script deployment/access. Raw: ${responseText.slice(
+          0,
+          200
+        )}`
+      );
+    }
+
+    if (!json?.success) {
+      throw new Error(json?.error || "Failed to insert quotation log row");
+    }
+
+    console.log("✅ APPEND QUOTATION LOG ROW FINISHED");
+  };
+
+  const uploadImageToDrive = async (dataUrl: string, fileName: string) => {
+    console.log("=== UPLOAD IMAGE TO DRIVE STARTED ===");
+    console.log("uploadImageToDrive called with:", {
+      dataUrl: dataUrl.substring(0, 100) + "...",
+      fileName,
+      dataUrlLength: dataUrl.length,
+    });
+
+    const parsed = parseDataUrl(dataUrl);
+    if (!parsed) {
+      console.error("❌ Failed to parse data URL");
+      throw new Error("Invalid image data");
+    }
+
+    console.log("✅ Parsed data URL successfully:", {
+      mimeType: parsed.mimeType,
+      base64Length: parsed.base64Data.length,
+    });
+
+    const params = new URLSearchParams();
+    params.append("action", "uploadFile");
+    params.append("base64Data", parsed.base64Data);
+    params.append("fileName", fileName);
+    params.append("mimeType", parsed.mimeType);
+    params.append("folderId", DRIVE_FOLDER_ID);
+
+    console.log("📤 Request params constructed:", {
+      action: "uploadFile",
+      fileName,
+      mimeType: parsed.mimeType,
+      folderId: DRIVE_FOLDER_ID,
+      base64DataLength: parsed.base64Data.length,
+    });
+
+    try {
+      console.log("🌐 Sending request to:", SCRIPT_URL);
+      const res = await fetch(SCRIPT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      });
+
+      console.log("📡 Response received:", {
+        status: res.status,
+        statusText: res.statusText,
+        ok: res.ok,
+      });
+
+      const responseText = await res.text();
+      console.log("📄 Raw response:", responseText);
+
+      const json = JSON.parse(responseText);
+      console.log("📋 Parsed response:", json);
+
+      if (!json?.success || !json?.fileUrl) {
+        console.error("❌ Upload failed:", json);
+        throw new Error(json?.error || "Image upload failed");
+      }
+
+      console.log("✅ Upload successful! File URL:", json.fileUrl);
+      return String(json.fileUrl);
+    } catch (err) {
+      console.error("❌ Upload error:", err);
+      throw err;
+    }
+  };
+
+  const getCustomerRowIndexInSheet = async (customerId: string) => {
+    console.log("=== GET CUSTOMER ROW INDEX STARTED ===", { customerId });
+    const url = `${SCRIPT_URL}?sheet=${encodeURIComponent(
+      QUOTATION_SHEET_NAME
+    )}`;
+
+    const res = await fetch(url);
+    const json = await res.json().catch(() => null);
+    console.log("📋 Sheet fetch response:", json);
+
+    if (!json?.success || !Array.isArray(json?.data)) {
+      throw new Error(json?.error || "Failed to fetch sheet data");
+    }
+
+    // Sheet rows are 1-indexed. Row 1 is header.
+    // Customer ID is expected in column B (index 1).
+    const rows: any[][] = json.data;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const rowCustomerId = row?.[1]?.toString()?.trim();
+      if (rowCustomerId && rowCustomerId === customerId) {
+        const rowIndex = i + 1;
+        console.log("✅ Found customer row:", { rowIndex, rowCustomerId });
+        return rowIndex;
+      }
+    }
+
+    console.error("❌ Customer ID not found in sheet:", customerId);
+    return null;
+  };
+
+  const updateCells = async (
+    rowIndex: number,
+    startColumnIndex: number,
+    values: any[]
+  ) => {
+    console.log("=== UPDATE CELLS STARTED ===", {
+      rowIndex,
+      startColumnIndex,
+      values,
+    });
+
+    for (let i = 0; i < values.length; i++) {
+      const columnIndex = startColumnIndex + i;
+      const value = values[i];
+
+      const params = new URLSearchParams();
+      params.append("action", "updateCell");
+      params.append("sheetName", QUOTATION_SHEET_NAME);
+      params.append("rowIndex", String(rowIndex));
+      params.append("columnIndex", String(columnIndex));
+      params.append("value", value == null ? "" : String(value));
+
+      console.log("📤 Updating cell:", { rowIndex, columnIndex, value });
+
+      const res = await fetch(SCRIPT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      });
+
+      const responseText = await res.text();
+      console.log("📄 Raw updateCell response:", responseText);
+      const json = JSON.parse(responseText);
+      if (!json?.success) {
+        throw new Error(
+          json?.error || `Failed to update cell R${rowIndex}C${columnIndex}`
+        );
+      }
+    }
+
+    console.log("✅ UPDATE CELLS FINISHED");
+  };
+
+  const appendQuotationRowStartingAtG = async (valuesFromG: any[]) => {
+    console.log("=== APPEND QUOTATION ROW STARTED ===");
+    // Pad A–F with empty values so that our data begins at Column G
+    const rowData = ["", "", "", "", "", "", ...valuesFromG];
+
+    console.log("📊 Row data prepared:", {
+      totalColumns: rowData.length,
+      dataFromColumnG: valuesFromG,
+      fullRowData: rowData,
+    });
+
+    const params = new URLSearchParams();
+    params.append("action", "insert");
+    params.append("sheetName", QUOTATION_SHEET_NAME);
+    params.append("rowData", JSON.stringify(rowData));
+
+    console.log("📤 Request params for sheet insert:", {
+      action: "insert",
+      sheetName: QUOTATION_SHEET_NAME,
+      rowDataLength: rowData.length,
+      rowDataPreview: rowData.slice(0, 3).concat(["..."]),
+    });
+
+    try {
+      console.log("🌐 Sending sheet insert request to:", SCRIPT_URL);
+      const res = await fetch(SCRIPT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      });
+
+      console.log("📡 Sheet insert response received:", {
+        status: res.status,
+        statusText: res.statusText,
+        ok: res.ok,
+      });
+
+      const responseText = await res.text();
+      console.log("📄 Raw sheet response:", responseText);
+
+      const json = JSON.parse(responseText);
+      console.log("📋 Parsed sheet response:", json);
+
+      if (!json?.success) {
+        console.error("❌ Sheet insert failed:", json);
+        throw new Error(json?.error || "Failed to insert quotation row");
+      }
+
+      console.log("✅ Sheet insert successful!");
+    } catch (err) {
+      console.error("❌ Sheet insert error:", err);
+      throw err;
+    }
+  };
 
   const addCustomItem = () => {
     const customId = `custom-${Date.now()}`;
@@ -100,11 +480,32 @@ export default function CreateQuotationPage() {
   const taxAmount = Math.round((subtotal * tax) / 100);
   const total = subtotal + taxAmount;
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    console.log("=== HANDLE SUBMIT STARTED ===");
+    console.log("📋 Form data:", {
+      selectedCustomer,
+      itemsCount: items.length,
+      items: items.map((i) => ({
+        productId: i.productId,
+        hasCustomPhoto: !!i.customPhoto,
+        customPhotoLength: i.customPhoto?.length,
+        quantity: i.quantity,
+        price: i.price,
+      })),
+    });
+
     if (!selectedCustomer || items.length === 0) {
+      console.error("❌ Validation failed: missing customer or items");
       alert("Please select a customer and add items");
       return;
     }
+
+    if (saving) {
+      console.log("⏸️ Already saving, skipping...");
+      return;
+    }
+    setSaving(true);
+    setLoadingMessage("Initializing...");
 
     const quotation: Quotation = {
       id: `quot-${Date.now()}`,
@@ -121,10 +522,140 @@ export default function CreateQuotationPage() {
       updatedAt: new Date().toISOString(),
     };
 
-    createQuotation(quotation);
-    alert("Quotation created successfully!");
-    setItems([]);
-    setSelectedCustomer("");
+    console.log("📄 Quotation object created:", {
+      id: quotation.id,
+      customerId: quotation.customerId,
+      total: quotation.total,
+      itemsCount: quotation.items.length,
+    });
+
+    try {
+      console.log("🔄 Starting to process items...");
+      const rowIndex = await getCustomerRowIndexInSheet(selectedCustomer);
+      if (!rowIndex) {
+        alert(
+          "Customer ID not found in sheet. Please ensure the customer exists in Google Sheet."
+        );
+        return;
+      }
+
+      // Option C: keep everything in the same row and same G–M block.
+      // We concatenate multiple items into each cell using newlines.
+      // Sheet headers (per your screenshot):
+      // G Product Name | H Product Image | I Qty | J Price | K Discount | L Subtotal | M Tax%
+      const START_COLUMN_G = 7;
+
+      const productNames: string[] = [];
+      const productImages: string[] = [];
+      const qtyList: string[] = [];
+      const priceList: string[] = [];
+      const discountList: string[] = [];
+      const subtotalList: string[] = [];
+
+      for (let index = 0; index < items.length; index++) {
+        setLoadingMessage(`Processing item ${index + 1} of ${items.length}...`);
+        await new Promise((resolve) => setTimeout(resolve, 0)); // Force UI update
+        console.log(`\n📦 Processing item ${index + 1}/${items.length}...`);
+        const item = items[index];
+        const product = products.find((p) => p.id === item.productId);
+
+        const productName =
+          (product?.title || item.customTitle || "").toString().trim() ||
+          `Item ${index + 1}`;
+        const itemSubtotal = item.quantity * item.price - (item.discount || 0);
+
+        let productImageUrl = "";
+        if (item.customPhoto) {
+          if (item.customPhoto.startsWith("data:")) {
+            setLoadingMessage(`Uploading image for item ${index + 1}...`);
+            console.log("📸 Uploading image for item:", item.productId);
+            try {
+              productImageUrl = await uploadImageToDrive(
+                item.customPhoto,
+                `${quotation.id}-${index + 1}.jpg`
+              );
+              console.log("✅ Uploaded image URL:", productImageUrl);
+            } catch (uploadErr: any) {
+              console.error(
+                "❌ Upload failed for item:",
+                item.productId,
+                uploadErr
+              );
+              // Warn but continue
+              alert(`Failed to upload image for item ${index + 1}. Proceeding without it.`);
+            }
+          } else {
+            productImageUrl = item.customPhoto;
+            console.log("Using existing image URL:", productImageUrl);
+          }
+        }
+
+        productNames.push(productName);
+        productImages.push(productImageUrl);
+        qtyList.push(String(item.quantity));
+        priceList.push(String(item.price));
+        discountList.push(String(item.discount || 0));
+        subtotalList.push(String(itemSubtotal));
+      }
+
+      const valuesFromG = [
+        productNames.join("\n"),
+        productImages.join("\n"),
+        qtyList.join("\n"),
+        priceList.join("\n"),
+        discountList.join("\n"),
+        subtotalList.join("\n"),
+        tax,
+      ];
+
+      setLoadingMessage("Updating Google Sheet...");
+      await updateCells(rowIndex, START_COLUMN_G, valuesFromG);
+      console.log("✅ Updated customer row with concatenated item values:", {
+        rowIndex,
+      });
+
+      const customer = customers.find((c) => c.id === selectedCustomer);
+      const timestamp = new Date().toISOString();
+      const logRow = [
+        timestamp,
+        selectedCustomer,
+        customer?.name || "",
+        customer?.phone || "",
+        customer?.whatsapp || "",
+        customer?.email || "",
+        valuesFromG[0],
+        valuesFromG[1],
+        valuesFromG[2],
+        valuesFromG[3],
+        valuesFromG[4],
+        valuesFromG[5],
+        valuesFromG[6],
+      ];
+
+      setLoadingMessage("Logging quotation...");
+      await appendQuotationLogRow(logRow);
+      console.log("✅ Appended quotation log row to sheet 'Quotation'");
+
+      console.log("🎉 All items processed, creating quotation...");
+      createQuotation(quotation);
+      alert("Quotation created successfully!");
+      setItems([]);
+      setSelectedCustomer("");
+    } catch (err: any) {
+      console.error("❌ Save failed:", err);
+      // Don't show generic error if we already showed specific error above
+      if (
+        !err.message ||
+        (!err.message.includes("Failed to upload") &&
+          !err.message.includes("Failed to save"))
+      ) {
+        alert("Failed to save quotation to Google Sheet");
+      }
+    } finally {
+      console.log("🏁 Handle submit finished");
+      setSaving(false);
+      setLoadingMessage("");
+    }
   };
 
   return (
@@ -200,6 +731,38 @@ export default function CreateQuotationPage() {
                                 className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 bg-white font-semibold text-gray-800"
                               />
                             )}
+
+
+                            {/* Product Code Search */}
+                            <div className="mt-2 flex gap-2">
+                              <input
+                                type="text"
+                                placeholder="Search Product Code (e.g. 123S)"
+                                className="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:bg-white transition-colors"
+                                onKeyDown={(e) => {
+                                  console.log("Key pressed:", e.key);
+                                  if (e.key === 'Enter') {
+                                    console.log("Enter key detected!");
+                                    const value = (e.target as HTMLInputElement).value;
+                                    console.log("Input value:", value);
+                                    handleProductCodeSearch(item.productId, value);
+                                  }
+                                }}
+                              />
+                              <button
+                                onClick={(e) => {
+                                  console.log("Search button clicked!");
+                                  const input = e.currentTarget.previousElementSibling as HTMLInputElement;
+                                  console.log("Input element:", input);
+                                  console.log("Input value:", input.value);
+                                  handleProductCodeSearch(item.productId, input.value);
+                                }}
+                                className="bg-gray-800 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-black transition-colors"
+                              >
+                                Search
+                              </button>
+                            </div>
+
                             <p className="text-sm text-gray-500 mt-1">
                               ₹{item.price.toLocaleString()}
                             </p>
@@ -253,12 +816,38 @@ export default function CreateQuotationPage() {
                           <div className="flex gap-4 items-start">
                             {item.customPhoto ? (
                               <div className="relative w-16 h-16 bg-gray-100 rounded-xl border-2 border-gray-200 overflow-hidden shadow-sm">
-                                <Image
-                                  src={item.customPhoto || "/placeholder.svg"}
-                                  alt="Custom photo"
-                                  fill
-                                  className="object-cover"
-                                />
+                                {(() => {
+                                  const original = item.customPhoto || "";
+                                  if (!original) return null;
+
+                                  if (original.startsWith("data:image/") || original.startsWith("blob:")) {
+                                    return (
+                                      <img
+                                        src={original}
+                                        alt="Custom photo"
+                                        className="w-full h-full object-cover"
+                                      />
+                                    );
+                                  }
+
+                                  const displayUrl = getDisplayableImageUrl(original) || original;
+
+                                  return (
+                                    <img
+                                      src={displayUrl}
+                                      alt="Custom photo"
+                                      className="w-full h-full object-cover"
+                                      referrerPolicy="no-referrer"
+                                      loading="lazy"
+                                      onError={(e) => {
+                                        // If thumbnail fails and it's different from original, try original
+                                        if (displayUrl !== original && (e.target as HTMLImageElement).src !== original) {
+                                          (e.target as HTMLImageElement).src = original;
+                                        }
+                                      }}
+                                    />
+                                  );
+                                })()}
                               </div>
                             ) : (
                               <div className="w-16 h-16 bg-gray-100 rounded-xl border-2 border-dashed border-gray-300 flex items-center justify-center text-xs text-gray-400">
@@ -396,9 +985,22 @@ export default function CreateQuotationPage() {
               <div className="space-y-3">
                 <button
                   onClick={handleSubmit}
-                  className="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white px-6 py-4 rounded-xl hover:from-blue-600 hover:to-purple-700 transition-all duration-200 font-semibold shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center justify-center gap-2"
+                  disabled={saving}
+                  className={`w-full ${saving
+                    ? "bg-gray-500 cursor-wait animate-pulse"
+                    : "bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 hover:shadow-xl hover:-translate-y-0.5"
+                    } text-white px-6 py-4 rounded-xl transition-all duration-200 font-semibold shadow-lg flex items-center justify-center gap-3`}
                 >
-                  Save as Draft
+                  {saving ? (
+                    <>
+                      <div className="w-6 h-6 border-4 border-white/80 border-t-white rounded-full animate-spin" />
+                      <span className="text-lg font-bold">
+                        {loadingMessage || "Saving Draft..."}
+                      </span>
+                    </>
+                  ) : (
+                    "Save as Draft"
+                  )}
                 </button>
                 <button className="w-full bg-gray-100 text-gray-700 px-6 py-4 rounded-xl hover:bg-gray-200 transition-all duration-200 font-semibold shadow-sm hover:shadow-md flex items-center justify-center gap-2">
                   Send via WhatsApp

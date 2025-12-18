@@ -16,7 +16,7 @@ import {
   Pie,
   Cell,
 } from "recharts";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Search,
   Users,
@@ -68,19 +68,117 @@ export default function AdminDashboard() {
     );
   }, [employees]);
 
-  // Chart data based on selected employee
-  const chartData = useMemo(() => {
-    return selectedEmployee === "all"
-      ? baseMonthlyData
-      : employeeMonthlyData.filter((d) => d.employee === selectedEmployee);
-  }, [selectedEmployee, employeeMonthlyData]);
+  const [chartData, setChartData] = useState([
+    { month: "Jan", sent: 0, marked: 0 },
+    { month: "Feb", sent: 0, marked: 0 },
+    { month: "Mar", sent: 0, marked: 0 },
+    { month: "Apr", sent: 0, marked: 0 },
+    { month: "May", sent: 0, marked: 0 },
+    { month: "Jun", sent: 0, marked: 0 },
+    { month: "Jul", sent: 0, marked: 0 },
+    { month: "Aug", sent: 0, marked: 0 },
+    { month: "Sep", sent: 0, marked: 0 },
+    { month: "Oct", sent: 0, marked: 0 },
+    { month: "Nov", sent: 0, marked: 0 },
+    { month: "Dec", sent: 0, marked: 0 },
+  ]);
 
-  const topProducts = [
-    { name: "Modern Sofa", sales: 8 },
-    { name: "Dining Table", sales: 6 },
-    { name: "Office Chair", sales: 12 },
-    { name: "King Bed", sales: 4 },
-  ];
+  const [loading, setLoading] = useState(true);
+
+  const [topProducts, setTopProducts] = useState<{ name: string; sales: number }[]>([]);
+  const [totalQuotations, setTotalQuotations] = useState(0);
+
+  useEffect(() => {
+    const fetchSheetData = async () => {
+      try {
+        const SCRIPT_URL =
+          "https://script.google.com/macros/s/AKfycbxVMOglX1D5V_Vbno5gx1E1Zw0jd2YjWQqDbdRpQA-l2Z_UzLaaTZxHyPu0ZLKQVxBu/exec";
+        const SPREADSHEET_ID = "11G2LjQ4k-44_vnbgb1LREfrOqbr2RQ7HJ3ANw8d3clc";
+
+        const response = await fetch(
+          `${SCRIPT_URL}?spreadsheetId=${SPREADSHEET_ID}&sheet=Quotation`
+        );
+        const json = await response.json();
+
+        if (json.success && Array.isArray(json.data)) {
+          const rows = json.data.slice(1); // Skip header
+          setTotalQuotations(rows.length);
+
+          const productCounts: Record<string, number> = {};
+          const monthlyCounts = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // Jan-Dec
+
+          rows.forEach((row: any[]) => {
+            // Count Products
+            const itemNames = (row[6] || "").toString().split("\n");
+            const quantities = (row[8] || "").toString().split("\n");
+
+            itemNames.forEach((name: string, index: number) => {
+              const cleanName = name.trim();
+              if (cleanName) {
+                const qty = Number(quantities[index]) || 1;
+                productCounts[cleanName] = (productCounts[cleanName] || 0) + qty;
+              }
+            });
+
+            // Count Monthly Sent Quotations
+            const timestamp = row[0];
+            if (timestamp) {
+              const date = new Date(timestamp);
+              if (!isNaN(date.getTime())) {
+                const monthIndex = date.getMonth(); // 0-11
+                monthlyCounts[monthIndex]++;
+              }
+            }
+          });
+
+          // Update Chart Data
+          setChartData((prev) =>
+            prev.map((item, index) => ({
+              ...item,
+              sent: monthlyCounts[index],
+            }))
+          );
+
+          // Update Top Products based on counts
+          const sortedProducts = Object.entries(productCounts)
+            .map(([name, sales]) => ({ name, sales }))
+            .sort((a, b) => b.sales - a.sales)
+            .slice(0, 5);
+
+          setTopProducts(sortedProducts);
+        }
+      } catch (err) {
+        console.error("Failed to fetch sheet data:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchSheetData();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 p-4 sm:p-6 lg:p-8">
+        <div className="max-w-7xl mx-auto space-y-6">
+          <div className="h-10 w-48 bg-slate-200 dark:bg-slate-700 rounded animate-pulse" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[1, 2].map((i) => (
+              <div
+                key={i}
+                className="h-32 bg-white dark:bg-slate-800 rounded-2xl p-5 border border-slate-200 dark:border-slate-700 animate-pulse"
+              />
+            ))}
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="h-[300px] bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 animate-pulse" />
+            <div className="h-[300px] bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 animate-pulse" />
+          </div>
+          <div className="h-64 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 animate-pulse" />
+        </div>
+      </div>
+    );
+  }
 
   const categoryData = [
     { name: "Sofa", value: 35 },
@@ -130,7 +228,7 @@ export default function AdminDashboard() {
         </div>
 
         {/* Summary Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
           <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md transition-shadow">
             <div className="flex items-center justify-between mb-3">
               <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
@@ -148,39 +246,9 @@ export default function AdminDashboard() {
             </p>
           </div>
 
-          <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md transition-shadow">
-            <div className="flex items-center justify-between mb-3">
-              <div className="p-2 bg-emerald-100 dark:bg-emerald-900 rounded-lg">
-                <Package className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-              </div>
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                All
-              </span>
-            </div>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              Total Products
-            </p>
-            <p className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white mt-1">
-              {products.length}
-            </p>
-          </div>
 
-          <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md transition-shadow">
-            <div className="flex items-center justify-between mb-3">
-              <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-lg">
-                <Send className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-              </div>
-              <span className="text-xs text-green-600 dark:text-green-400">
-                Active
-              </span>
-            </div>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              Sent Quotations
-            </p>
-            <p className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white mt-1">
-              {baseMonthlyData.reduce((a, b) => a + b.sent, 0)}
-            </p>
-          </div>
+
+
 
           <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md transition-shadow">
             <div className="flex items-center justify-between mb-3">
@@ -192,10 +260,10 @@ export default function AdminDashboard() {
               </span>
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-400">
-              Maked Quotations
+              Made Quotations
             </p>
             <p className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white mt-1">
-              {baseMonthlyData.reduce((a, b) => a + b.marked, 0)}
+              {totalQuotations}
             </p>
           </div>
         </div>
@@ -206,7 +274,7 @@ export default function AdminDashboard() {
           <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200 dark:border-slate-700">
             <h2 className="text-base sm:text-lg font-semibold text-slate-900 dark:text-white mb-3 sm:mb-4 flex items-center gap-2">
               <Send className="w-4 h-4 sm:w-5 sm:h-5 text-purple-600 flex-shrink-0" />
-              <span className="truncate">Sent vs Marked Quotations</span>
+              <span className="truncate">Sent Quotations</span>
             </h2>
             <div className="w-full h-[220px] sm:h-[280px] md:h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
@@ -251,10 +319,7 @@ export default function AdminDashboard() {
                       marginBottom: 4,
                       fontSize: "0.7rem",
                     }}
-                    formatter={(value: number, name: string) => [
-                      value,
-                      name === "sent" ? "Sent" : "Marked",
-                    ]}
+                    formatter={(value: number) => [value, "Sent"]}
                     labelFormatter={(label) => `Month: ${label}`}
                   />
                   <Legend
@@ -263,10 +328,8 @@ export default function AdminDashboard() {
                       paddingTop: "8px",
                       fontSize: "0.7rem",
                     }}
-                    formatter={(value) => (
-                      <span style={{ color: "#475569" }}>
-                        {value === "sent" ? "Sent" : "Marked"}
-                      </span>
+                    formatter={() => (
+                      <span style={{ color: "#475569" }}>Sent</span>
                     )}
                   />
                   <Line
@@ -282,20 +345,6 @@ export default function AdminDashboard() {
                     }}
                     activeDot={{ r: 5, strokeWidth: 0 }}
                     name="sent"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="marked"
-                    stroke="#10b981"
-                    strokeWidth={2.3}
-                    dot={{
-                      fill: "#10b981",
-                      r: window.innerWidth < 640 ? 2.5 : 3.5,
-                      strokeWidth: 1.5,
-                      stroke: "#fff",
-                    }}
-                    activeDot={{ r: 5, strokeWidth: 0 }}
-                    name="marked"
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -359,106 +408,6 @@ export default function AdminDashboard() {
                   <Bar dataKey="sales" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
-            </div>
-          </div>
-      {/* ────────────────────── Pie Chart – Sales by Category ────────────────────── */}
-<div className="bg-white dark:bg-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200 dark:border-slate-700">
-  <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">
-    Sales by Category
-  </h2>
-
-  <div className="relative w-full" style={{ height: "300px" }}>
-    <ResponsiveContainer width="100%" height="100%">
-      <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
-        <Pie
-          data={categoryData}
-          cx="50%"
-          cy="50%"
-          innerRadius={window.innerWidth < 640 ? "45%" : "55%"}
-          outerRadius={window.innerWidth < 640 ? "75%" : "80%"}
-          paddingAngle={2}
-          dataKey="value"
-          // Desktop: label with line, Mobile: no label
-          label={window.innerWidth >= 640 ? { position: "outside" } : false}
-          labelLine={window.innerWidth >= 640}
-          labelStyle={{
-            fontSize: "12px",
-            fontWeight: "600",
-            fill: "currentColor",
-          }}
-          isAnimationActive={true}
-          animationDuration={800}
-        >
-          {categoryData.map((entry, index) => (
-            <Cell
-              key={`cell-${index}`}
-              fill={COLORS[index % COLORS.length]}
-              stroke="#fff"
-              strokeWidth={2}
-              className="transition-all duration-200 hover:opacity-80 cursor-pointer"
-            />
-          ))}
-        </Pie>
-
-        {/* Tooltip */}
-        <Tooltip
-          contentStyle={{
-            backgroundColor: "rgba(255,255,255,0.95)",
-            border: "1px solid #e2e8f0",
-            borderRadius: "8px",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-            fontSize: "13px",
-          }}
-          formatter={(value: number) => `${value}%`}
-        />
-
-        {/* Legend – adapts layout */}
-        <Legend
-          layout={window.innerWidth < 640 ? "horizontal" : "vertical"}
-          verticalAlign={window.innerWidth < 640 ? "bottom" : "middle"}
-          align={window.innerWidth < 640 ? "center" : "right"}
-          wrapperStyle={{
-            paddingLeft: window.innerWidth < 640 ? "0" : "20px",
-            fontSize: "12px",
-          }}
-          formatter={(value) => (
-            <span className="text-xs text-slate-600 dark:text-slate-300">
-              {value}
-            </span>
-          )}
-        />
-      </PieChart>
-    </ResponsiveContainer>
-  </div>
-</div>
-
-          {/* Employee Performance */}
-          <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700">
-            <h2 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">
-              Employee Performance
-            </h2>
-            <div className="space-y-4 max-h-72 overflow-y-auto pr-2">
-              {employees.map((emp) => (
-                <div key={emp.id} className="pb-3 last:pb-0">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="font-medium text-slate-900 dark:text-white text-sm">
-                      {emp.name}
-                    </span>
-                    <span className="text-sm font-bold text-purple-600 dark:text-purple-400">
-                      {emp.conversionRate}%
-                    </span>
-                  </div>
-                  <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
-                    <div
-                      className="bg-gradient-to-r from-purple-500 to-blue-600 h-2 rounded-full transition-all duration-500"
-                      style={{ width: `${emp.conversionRate}%` }}
-                    />
-                  </div>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                    {emp.quotations} quotations sent
-                  </p>
-                </div>
-              ))}
             </div>
           </div>
         </div>

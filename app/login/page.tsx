@@ -5,7 +5,7 @@ import { useAuth } from "@/src/contexts/AuthContext";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -18,44 +18,34 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await login(email, password);
+      await login(username, password);
       setTimeout(() => router.push("/"), 300);
     } catch (err) {
       console.error("❌ Login failed:", err);
-      setError("Invalid email or password");
+      setError("Invalid username or password");
     } finally {
       setLoading(false);
     }
-  };
-
-  const fillDemoCredentials = (role: "admin" | "employee") => {
-    const credentials = {
-      admin: { email: "admin@furniture.com", password: "admin123" },
-      employee: { email: "employee@furniture.com", password: "emp123" },
-    } as const;
-    const creds = credentials[role];
-    setEmail(creds.email);
-    setPassword(creds.password);
   };
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-gray-100 via-gray-200 to-purple-100 p-6">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-gray-200 p-8">
         <h1 className="text-3xl font-bold text-gray-800 text-center mb-2">
-        Curioushues
+          Curioushues
         </h1>
-    
+
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Email
+              Username
             </label>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
               className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent text-gray-700 placeholder-gray-400"
-              placeholder="Enter your email"
+              placeholder="Enter your username"
               required
             />
           </div>
@@ -81,39 +71,14 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className={`w-full py-2 rounded-lg font-semibold transition-all duration-200 ${
-              loading
-                ? "bg-gray-400 text-gray-100 cursor-not-allowed"
-                : "bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600 text-white shadow-md"
-            }`}
+            className={`w-full py-2 rounded-lg font-semibold transition-all duration-200 ${loading
+              ? "bg-gray-400 text-gray-100 cursor-not-allowed"
+              : "bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600 text-white shadow-md"
+              }`}
           >
             {loading ? "Logging in..." : "Login"}
           </button>
         </form>
-
-        {/* Demo Accounts Section */}
-        <div className="mt-8 border-t border-gray-200 pt-6">
-          <p className="text-sm font-medium text-gray-700 mb-3">
-            Demo Accounts:
-          </p>
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => fillDemoCredentials("admin")}
-              className="w-full text-left px-4 py-2 rounded-lg bg-purple-50 text-purple-700 hover:bg-purple-100 transition-all"
-            >
-              Admin: admin@furniture.com
-            </button>
-            <button
-              type="button"
-              onClick={() => fillDemoCredentials("employee")}
-              className="w-full text-left px-4 py-2 rounded-lg bg-green-50 text-green-700 hover:bg-green-100 transition-all"
-            >
-              Employee: employee@furniture.com
-            </button>
-          </div>
-        
-        </div>
       </div>
     </div>
   );

@@ -6,10 +6,10 @@ import type {
   QuotationItem,
   Customer,
   Product,
-} from "@/types/index";
+} from "@/src/types/index";
 import { useEmployee } from "@/src/contexts/EmployeeContext";
 import { useAdmin } from "@/src/contexts/AdminContext";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import {
   History,
   Filter,
@@ -33,21 +33,183 @@ import jsPDF from "jspdf";
 import {
   generateQuotationPDF,
   generatePDFBlob,
+  generateAndUploadQuotationPDF,
 } from "@/src/utils/pdfGenerator";
 
 export default function HistoryPage() {
-  const { quotations, updateQuotation } = useEmployee();
-  const { customers, products, loading } = useAdmin();
+  const { updateQuotation } = useEmployee();
+  const { customers, products } = useAdmin();
+
+  const SCRIPT_URL =
+    "https://script.google.com/macros/s/AKfycbxVMOglX1D5V_Vbno5gx1E1Zw0jd2YjWQqDbdRpQA-l2Z_UzLaaTZxHyPu0ZLKQVxBu/exec";
+  const QUOTATION_LOG_SHEET_NAME = "Quotation";
+  const QUOTATION_PDF_FOLDER_ID = "1QKe0M9eQQ1kY7xWUqodcwLFAQfGuEY7F";
+
+  const QUOTATION_LINK_COLUMN_INDEX = 14;
+
+  const [quotations, setQuotations] = useState<Quotation[]>([]);
+  const [loadingQuotations, setLoadingQuotations] = useState(true);
+  const [quotationFetchError, setQuotationFetchError] = useState<string | null>(
+    null
+  );
+
+  const normalizeImageUrl = (url: string) => {
+    const value = (url || "").trim();
+    if (!value) return "";
+    if (value.startsWith("data:image/")) return value;
+
+    try {
+      const u = new URL(value);
+      if (u.hostname.includes("drive.google.com")) {
+        const idFromOpen = u.searchParams.get("id");
+        if (idFromOpen) {
+          return `https://drive.google.com/uc?export=view&id=${idFromOpen}`;
+        }
+        const m = u.pathname.match(/\/file\/d\/([^/]+)/);
+        if (m?.[1]) {
+          return `https://drive.google.com/uc?export=view&id=${m[1]}`;
+        }
+      }
+    } catch {
+      return value;
+    }
+
+    return value;
+  };
+
+  const getDriveFileId = (url: string) => {
+    const value = (url || "").trim();
+    if (!value) return "";
+    try {
+      const u = new URL(value);
+      const idFromOpen = u.searchParams.get("id");
+      if (idFromOpen) return idFromOpen;
+      const m = u.pathname.match(/\/file\/d\/([^/]+)/);
+      if (m?.[1]) return m[1];
+      const m2 = u.pathname.match(/\/uc$/);
+      if (m2) {
+        const idFromUc = u.searchParams.get("id");
+        if (idFromUc) return idFromUc;
+      }
+    } catch {
+      return "";
+    }
+    return "";
+  };
+
+  const getDisplayableImageUrl = (
+    url: string | null | undefined,
+    size: number = 400
+  ): string => {
+    if (!url) return "https://via.placeholder.com/400?text=No+Image";
+
+    try {
+      const fileId =
+        url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/)?.[1] ||
+        url.match(/[?&]id=([a-zA-Z0-9_-]+)/)?.[1] ||
+        url.match(/open\?id=([a-zA-Z0-9_-]+)/)?.[1] ||
+        url.match(/([a-zA-Z0-9_-]{25,})/)?.[1] ||
+        "";
+
+      if (fileId) {
+        return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${size}`;
+      }
+
+      const cacheBuster = Date.now();
+      return url.includes("?")
+        ? `${url}&cb=${cacheBuster}`
+        : `${url}?cb=${cacheBuster}`;
+    } catch {
+      return "https://via.placeholder.com/400?text=Error+Loading+Image";
+    }
+  };
 
   const [searchTerm, setSearchTerm] = useState<string>("");
 
   const [isLoading, setIsLoading] = useState(true);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   useEffect(() => {
-    if (customers.length > 0) {
-      setIsLoading(false);
-    }
-  }, [customers]);
+    const fetchQuotations = async () => {
+      setLoadingQuotations(true);
+      setQuotationFetchError(null);
+
+      try {
+        const url = `${SCRIPT_URL}?sheet=${encodeURIComponent(
+          QUOTATION_LOG_SHEET_NAME
+        )}`;
+        const res = await fetch(url);
+        const json = await res.json().catch(() => null);
+
+        if (!json?.success || !Array.isArray(json?.data)) {
+          throw new Error(
+            json?.error || "Failed to fetch quotations from sheet"
+          );
+        }
+
+        // Expected columns in Quotation sheet:
+        // Timestamp, Customer ID, Customer Name, Phone Number, Whatsapp Number, Email,
+        // Product Name, Product Image, Qty, Price, Discount, Subtotal, Tax%
+        const rows: any[][] = json.data;
+        const dataRows = rows.slice(1);
+
+        const mapped = dataRows
+          .map((row: any[], idx: number): Quotation => {
+            const timestamp = row?.[0]?.toString() || "";
+            const customerId = row?.[1]?.toString() || "";
+            const productName = row?.[6]?.toString() || "";
+            const productImageUrl = row?.[7]?.toString() || "";
+            const qty = Number(row?.[8] ?? 0) || 0;
+            const price = Number(row?.[9] ?? 0) || 0;
+            const discount = Number(row?.[10] ?? 0) || 0;
+            const subtotal = Number(row?.[11] ?? qty * price - discount) || 0;
+            const taxPercent = Number(row?.[12] ?? 0) || 0;
+            const taxAmount = Math.round((subtotal * taxPercent) / 100);
+            const total = subtotal + taxAmount;
+
+            const item: QuotationItem = {
+              productId: `sheet-item-${idx + 1}`,
+              quantity: qty,
+              price,
+              discount,
+              customTitle: productName,
+              customPhoto: productImageUrl,
+            };
+
+            const idBase = timestamp ? Date.parse(timestamp) : Date.now();
+            return {
+              id: `quot-sheet-${idBase}-${idx + 1}`,
+              customerId,
+              employeeId: "",
+              items: [item],
+              subtotal,
+              tax: taxAmount,
+              discount,
+              total,
+              status: "draft" as const,
+              versions: [],
+              createdAt: timestamp || new Date().toISOString(),
+              updatedAt: timestamp || new Date().toISOString(),
+            };
+          })
+          .filter((q: Quotation) => Boolean(q.customerId));
+
+        setQuotations(mapped);
+      } catch (err: any) {
+        console.error("Failed to fetch quotations (History)", err);
+        setQuotations([]);
+        setQuotationFetchError(err?.message || "Failed to fetch quotations");
+      } finally {
+        setLoadingQuotations(false);
+      }
+    };
+
+    fetchQuotations();
+  }, []);
+
+  useEffect(() => {
+    setIsLoading(Boolean(loadingQuotations));
+  }, [loadingQuotations]);
 
   const [editingQuotation, setEditingQuotation] = useState<Quotation | null>(
     null
@@ -66,6 +228,7 @@ export default function HistoryPage() {
   const [discount, setDiscount] = useState(0);
   const [tax] = useState(18);
   const [showCamera, setShowCamera] = useState<string | null>(null);
+  const [downloadingPdfId, setDownloadingPdfId] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -85,17 +248,66 @@ export default function HistoryPage() {
     if (!searchTerm) return true;
 
     const searchLower = searchTerm.toLowerCase();
-    const matchesId = quot.id.toLowerCase().includes(searchLower);
+    const matchesId = quot.customerId.toLowerCase().includes(searchLower);
     const customerName = getCustomerName(quot.customerId).toLowerCase();
     const matchesName = customerName.includes(searchLower);
 
     return matchesId || matchesName;
   });
 
+  const groupedQuotations = useMemo(() => {
+    const grouped = new Map<string, Quotation[]>();
+
+    for (const q of filtered) {
+      const key = q.customerId || "unknown";
+      const list = grouped.get(key);
+      if (list) list.push(q);
+      else grouped.set(key, [q]);
+    }
+
+    const aggregated: Quotation[] = Array.from(grouped.entries()).map(
+      ([customerId, qs]) => {
+        const items = qs.flatMap((q) => q.items);
+        const subtotal = qs.reduce((sum, q) => sum + (q.subtotal || 0), 0);
+        const tax = qs.reduce((sum, q) => sum + (q.tax || 0), 0);
+        const discount = qs.reduce((sum, q) => sum + (q.discount || 0), 0);
+        const total = qs.reduce((sum, q) => sum + (q.total || 0), 0);
+
+        const latest = qs.reduce((a, b) =>
+          new Date(a.createdAt).getTime() >= new Date(b.createdAt).getTime()
+            ? a
+            : b
+        );
+
+        return {
+          id: `cust-${customerId}`,
+          customerId,
+          employeeId: latest.employeeId,
+          items,
+          subtotal,
+          tax,
+          discount,
+          total,
+          status: latest.status,
+          versions: [],
+          createdAt: latest.createdAt,
+          updatedAt: latest.updatedAt || latest.createdAt,
+        };
+      }
+    );
+
+    aggregated.sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    return aggregated;
+  }, [filtered]);
+
   useEffect(() => {
     if (editingQuotation) {
       setSelectedCustomer(editingQuotation.customerId);
-      setItems(editingQuotation.items.map((i) => ({ ...i })));
+      setItems(editingQuotation.items.map((i: QuotationItem) => ({ ...i })));
       setDiscount(editingQuotation.discount || 0);
       setShowCamera(null);
     }
@@ -153,9 +365,110 @@ export default function HistoryPage() {
     setSelectedCustomer("");
   };
 
-  const downloadPDF = (quotation: Quotation) => {
+  const findQuotationRowIndexInSheet = async (quotation: Quotation) => {
+    const url = `${SCRIPT_URL}?sheet=${encodeURIComponent(
+      QUOTATION_LOG_SHEET_NAME
+    )}`;
+    const res = await fetch(url);
+    const json = await res.json().catch(() => null);
+    if (!json?.success || !Array.isArray(json?.data)) {
+      throw new Error(json?.error || "Failed to fetch quotation sheet");
+    }
+
+    const rows: any[][] = json.data;
+    const dataRows = rows.slice(1);
+
+    const qTimestamp = String(quotation.createdAt || "").trim();
+    const qCustomerId = String(quotation.customerId || "").trim();
+    const qProductName = String(quotation.items?.[0]?.customTitle || "")
+      .trim()
+      .toLowerCase();
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i] || [];
+      const rowTimestamp = String(row?.[0] ?? "").trim();
+      const rowCustomerId = String(row?.[1] ?? "").trim();
+      const rowProductName = String(row?.[6] ?? "")
+        .trim()
+        .toLowerCase();
+
+      const timestampMatch = rowTimestamp === qTimestamp;
+      const customerMatch = rowCustomerId === qCustomerId;
+      const productMatch = !qProductName || rowProductName === qProductName;
+
+      if (timestampMatch && customerMatch && productMatch) {
+        return i + 2;
+      }
+    }
+
+    return null;
+  };
+
+  const updateQuotationLinkInSheet = async (
+    rowIndex: number,
+    fileUrl: string
+  ) => {
+    const body = new URLSearchParams();
+    body.append("action", "updateCell");
+    body.append("sheetName", QUOTATION_LOG_SHEET_NAME);
+    body.append("rowIndex", String(rowIndex));
+    body.append("columnIndex", String(QUOTATION_LINK_COLUMN_INDEX));
+    body.append("value", fileUrl);
+
+    const res = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    });
+
+    const json = await res.json().catch(() => null);
+    if (!res.ok || !json?.success) {
+      throw new Error(json?.error || "Failed to update quotation link");
+    }
+  };
+
+  const downloadPDF = async (quotation: Quotation) => {
+    if (downloadingPdfId) return;
+    setDownloadingPdfId(quotation.id);
     const customer = getCustomer(quotation.customerId);
-    generateQuotationPDF(quotation, customer, products);
+    try {
+      const { fileUrl, pdfBlob, fileName } =
+        await generateAndUploadQuotationPDF({
+          quotation,
+          customer,
+          products,
+          scriptUrl: SCRIPT_URL,
+          folderId: QUOTATION_PDF_FOLDER_ID,
+        });
+
+      try {
+        const rowIndex = await findQuotationRowIndexInSheet(quotation);
+        if (rowIndex) {
+          await updateQuotationLinkInSheet(rowIndex, fileUrl);
+        }
+      } catch (e) {
+        console.error("Failed to write Quotation Link to sheet", e);
+      }
+
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      window.open(fileUrl, "_blank");
+    } catch (error) {
+      console.error("PDF upload failed, downloading locally", error);
+      generateQuotationPDF(quotation, customer, products);
+      alert("PDF downloaded locally. Drive upload failed.");
+    } finally {
+      setDownloadingPdfId(null);
+    }
   };
 
   const handleSend = async () => {
@@ -200,12 +513,12 @@ export default function HistoryPage() {
       setTimeout(() => {
         const message = encodeURIComponent(
           `Hello ${customer.name}! 📋\n\n` +
-            `I've prepared your quotation (${sendingQuotation.id}):\n\n` +
-            `📦 Items: ${sendingQuotation.items.length}\n` +
-            `💰 Total: ₹${sendingQuotation.total.toLocaleString()}\n\n` +
-            `📎 *PLEASE ATTACH THE DOWNLOADED PDF FILE ABOVE*\n` +
-            `The PDF should be in your downloads folder as: quotation-${sendingQuotation.id}.pdf\n\n` +
-            `Let me know if you have any questions! 🙋‍♂️`
+          `I've prepared your quotation (${sendingQuotation.id}):\n\n` +
+          `📦 Items: ${sendingQuotation.items.length}\n` +
+          `💰 Total: ₹${sendingQuotation.total.toLocaleString()}\n\n` +
+          `📎 *PLEASE ATTACH THE DOWNLOADED PDF FILE ABOVE*\n` +
+          `The PDF should be in your downloads folder as: quotation-${sendingQuotation.id}.pdf\n\n` +
+          `Let me know if you have any questions! 🙋‍♂️`
         );
 
         const whatsappUrl = `https://wa.me/${customer.phone}?text=${message}`;
@@ -300,35 +613,103 @@ export default function HistoryPage() {
   };
 
   const subtotal = items.reduce(
-    (s, i) => s + i.price * i.quantity - (i.discount || 0),
+    (s: number, i: QuotationItem) =>
+      s + i.price * i.quantity - (i.discount || 0),
     0
   );
   const taxAmount = Math.round((subtotal * tax) / 100);
-  const total = subtotal + taxAmount - discount;
+  const total = subtotal + taxAmount;
 
-  const handleUpdateSubmit = () => {
+  const handleUpdateSubmit = async () => {
     if (!selectedCustomer || items.length === 0 || !editingQuotation) {
       alert("Please select a customer and add items");
       return;
     }
 
-    const updatedQuotation = {
-      ...editingQuotation,
-      customerId: selectedCustomer,
-      items: [...items],
-      subtotal,
-      tax: taxAmount,
-      discount,
-      total,
-      updatedAt: new Date().toISOString(),
-    };
+    setIsUpdating(true);
+    try {
+      // 1. Update Google Sheet
+      const updateSheetCell = async (rowIndex: number, colIndex: number, value: any) => {
+        const body = new URLSearchParams();
+        body.append("action", "updateCell");
+        body.append("sheetName", QUOTATION_LOG_SHEET_NAME);
+        body.append("rowIndex", String(rowIndex));
+        body.append("columnIndex", String(colIndex));
+        body.append("value", String(value));
 
-    // Update the quotation in the context
-    updateQuotation(editingQuotation.id, updatedQuotation);
+        await fetch(SCRIPT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString(),
+        });
+      };
 
-    // Close the edit modal and reset form
-    closeEdit();
-    alert("Quotation updated successfully!");
+      // Process items
+      for (const item of items) {
+        // Only update existing items linked to a sheet row
+        if (item.productId.startsWith("sheet-item-")) {
+          // Extract row index from ID (sheet-item-1 -> Row 2)
+          // ID format: sheet-item-{idx+1} where idx is 0-based index from data array.
+          // data array starts at Row 2. So idx=0 is Row 2.
+          // ID=sheet-item-1 => idx=0 => Row 2.
+          // Row Index = parseInt(ID.split('-')[2]) + 1
+          const match = item.productId.match(/sheet-item-(\d+)/);
+          if (match && match[1]) {
+            const dataRowIndex = parseInt(match[1]);
+            const sheetRowIndex = dataRowIndex + 1;
+
+            const itemSubtotal = item.price * item.quantity - (item.discount || 0);
+
+            // Update Columns G(6) to M(12)
+            // Name (6)
+            await updateSheetCell(sheetRowIndex, 7, item.customTitle || "");
+
+            // Image (7) - Only update if it's a URL or empty, skip base64 to avoid huge payload if not handled
+            if (item.customPhoto && !item.customPhoto.startsWith("data:")) {
+              await updateSheetCell(sheetRowIndex, 8, item.customPhoto);
+            }
+
+            // Qty (8)
+            await updateSheetCell(sheetRowIndex, 9, item.quantity);
+            // Price (9) - This corresponds to Column J if we consider 0-index. 
+            // Wait, Column A=0, B=1, ... G=6, H=7, I=8, J=9. Correct.
+            await updateSheetCell(sheetRowIndex, 10, item.price);
+            // Discount (10) - Column K
+            await updateSheetCell(sheetRowIndex, 11, item.discount || 0);
+            // Subtotal (11) - Column L
+            await updateSheetCell(sheetRowIndex, 12, itemSubtotal);
+            // Tax% (12) - Column M
+            await updateSheetCell(sheetRowIndex, 13, tax);
+          }
+        }
+      }
+
+      const updatedQuotation = {
+        ...editingQuotation,
+        customerId: selectedCustomer,
+        items: [...items],
+        subtotal,
+        tax: taxAmount,
+        discount: 0,
+        total,
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Update the quotation in the context
+      await updateQuotation(editingQuotation.id, updatedQuotation);
+
+      // Artificial delay to ensure user sees the feedback if operation is too fast
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      // Close the edit modal and reset form
+      closeEdit();
+      alert("Quotation updated successfully in Sheet!");
+    } catch (error) {
+      console.error("Update failed", error);
+      alert("Failed to update quotation");
+    } finally {
+      setIsUpdating(false);
+    }
   };
 
   // === VIEW MODAL ===
@@ -343,7 +724,7 @@ export default function HistoryPage() {
             <div className="sticky top-0 bg-white p-5 border-b border-gray-200 flex justify-between items-center z-10">
               <h2 className="text-xl md:text-2xl font-bold text-gray-800 flex items-center gap-2">
                 <Eye className="w-6 h-6 text-blue-600" />
-                Quotation {viewingQuotation.id}
+                Customer {viewingQuotation.customerId}
               </h2>
               <button
                 onClick={closeView}
@@ -375,7 +756,7 @@ export default function HistoryPage() {
               {/* Items */}
               <div className="space-y-4">
                 <h3 className="font-semibold text-gray-800">Items</h3>
-                {items.map((item) => {
+                {items.map((item, idx) => {
                   const product = products?.find(
                     (p) => p.id === item.productId
                   );
@@ -384,7 +765,7 @@ export default function HistoryPage() {
 
                   return (
                     <div
-                      key={item.productId}
+                      key={`${item.productId}-${idx}`}
                       className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm"
                     >
                       <div className="flex justify-between items-start mb-3">
@@ -410,11 +791,50 @@ export default function HistoryPage() {
                             Attached Photo
                           </p>
                           <div className="relative w-full max-w-xs h-32 mx-auto rounded-lg overflow-hidden border border-gray-200">
-                            <img
-                              src={item.customPhoto}
-                              alt="Item photo"
-                              className="w-full h-full object-cover"
-                            />
+                            {(() => {
+                              const original = item.customPhoto;
+                              const fileId = getDriveFileId(original);
+                              const directUrl = getDisplayableImageUrl(
+                                original,
+                                800
+                              );
+                              const thumbUrl = fileId
+                                ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`
+                                : "";
+
+                              const proxiedDirectUrl = `/api/image-proxy?url=${encodeURIComponent(
+                                directUrl
+                              )}`;
+                              const proxiedThumbUrl = thumbUrl
+                                ? `/api/image-proxy?url=${encodeURIComponent(
+                                  thumbUrl
+                                )}`
+                                : "";
+
+                              return (
+                                <img
+                                  src={proxiedDirectUrl}
+                                  alt="Item photo"
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => {
+                                    if (!proxiedThumbUrl) return;
+                                    const img = e.currentTarget;
+                                    if (img.src === proxiedThumbUrl) return;
+                                    img.src = proxiedThumbUrl;
+                                  }}
+                                />
+                              );
+                            })()}
+                          </div>
+                          <div className="mt-2 text-center">
+                            <a
+                              href={normalizeImageUrl(item.customPhoto)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-blue-600 hover:underline"
+                            >
+                              Open Image
+                            </a>
                           </div>
                         </div>
                       )}
@@ -463,14 +883,7 @@ export default function HistoryPage() {
                       ₹{viewingQuotation.tax.toLocaleString()}
                     </span>
                   </div>
-                  {viewingQuotation.discount > 0 && (
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Discount</span>
-                      <span className="font-medium text-red-600">
-                        -₹{viewingQuotation.discount.toLocaleString()}
-                      </span>
-                    </div>
-                  )}
+
                 </div>
                 <div className="flex justify-between items-center mt-4 pt-3 border-t border-gray-300">
                   <span className="font-bold text-gray-800">Total Amount</span>
@@ -485,7 +898,7 @@ export default function HistoryPage() {
                   </span>
                   {viewingQuotation.updatedAt &&
                     viewingQuotation.updatedAt !==
-                      viewingQuotation.createdAt && (
+                    viewingQuotation.createdAt && (
                       <span>
                         • Updated:{" "}
                         {new Date(viewingQuotation.updatedAt).toLocaleString()}
@@ -542,11 +955,10 @@ export default function HistoryPage() {
                 <div className="flex justify-center">
                   <button
                     onClick={() => setSendMethod("whatsapp")}
-                    className={`p-4 rounded-lg border flex flex-col items-center gap-2 transition-all w-full max-w-xs ${
-                      sendMethod === "whatsapp"
-                        ? "bg-green-100 border-green-500 text-green-700"
-                        : "border-gray-200"
-                    }`}
+                    className={`p-4 rounded-lg border flex flex-col items-center gap-2 transition-all w-full max-w-xs ${sendMethod === "whatsapp"
+                      ? "bg-green-100 border-green-500 text-green-700"
+                      : "border-gray-200"
+                      }`}
                   >
                     <MessageCircle className="w-6 h-6" />
                     <span className="text-sm font-medium">WhatsApp</span>
@@ -713,11 +1125,50 @@ export default function HistoryPage() {
                           <div className="flex gap-3 items-start">
                             {item.customPhoto ? (
                               <div className="relative w-14 h-14 rounded-lg overflow-hidden border">
-                                <img
-                                  src={item.customPhoto}
-                                  alt=""
-                                  className="w-full h-full object-cover"
-                                />
+                                {(() => {
+                                  const original = item.customPhoto || "";
+                                  if (original.startsWith("data:image/")) {
+                                    return (
+                                      <img
+                                        src={original}
+                                        alt=""
+                                        className="w-full h-full object-cover"
+                                      />
+                                    );
+                                  }
+
+                                  const fileId = getDriveFileId(original);
+                                  const directUrl = getDisplayableImageUrl(
+                                    original,
+                                    800
+                                  );
+                                  const thumbUrl = fileId
+                                    ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`
+                                    : "";
+
+                                  const proxiedDirectUrl = `/api/image-proxy?url=${encodeURIComponent(
+                                    directUrl
+                                  )}`;
+                                  const proxiedThumbUrl = thumbUrl
+                                    ? `/api/image-proxy?url=${encodeURIComponent(
+                                      thumbUrl
+                                    )}`
+                                    : "";
+
+                                  return (
+                                    <img
+                                      src={proxiedDirectUrl}
+                                      alt=""
+                                      className="w-full h-full object-cover"
+                                      onError={(e) => {
+                                        if (!proxiedThumbUrl) return;
+                                        const img = e.currentTarget;
+                                        if (img.src === proxiedThumbUrl) return;
+                                        img.src = proxiedThumbUrl;
+                                      }}
+                                    />
+                                  );
+                                })()}
                               </div>
                             ) : (
                               <div className="w-14 h-14 rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center text-xs text-gray-400">
@@ -811,18 +1262,7 @@ export default function HistoryPage() {
                       ₹{taxAmount.toLocaleString()}
                     </span>
                   </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-600">Discount</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={discount}
-                      onChange={(e) =>
-                        setDiscount(parseInt(e.target.value) || 0)
-                      }
-                      className="w-20 px-2 py-1 border border-gray-200 rounded text-right text-sm"
-                    />
-                  </div>
+
                   Summary
                 </div>
                 <div className="flex justify-between items-center mt-4 pt-3 border-t border-gray-200">
@@ -834,9 +1274,17 @@ export default function HistoryPage() {
                 <div className="flex gap-3 mt-4">
                   <button
                     onClick={handleUpdateSubmit}
-                    className="flex-1 bg-gradient-to-r from-green-500 to-green-600 text-white py-3 rounded-xl font-semibold"
+                    className="flex-1 bg-gradient-to-r from-green-500 to-green-600 text-white py-3 rounded-xl font-semibold disabled:opacity-70 disabled:cursor-not-allowed"
+                    disabled={isUpdating}
                   >
-                    Update
+                    {isUpdating ? (
+                      <div className="flex items-center justify-center gap-2">
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Updating...
+                      </div>
+                    ) : (
+                      "Update"
+                    )}
                   </button>
                   <button
                     onClick={closeEdit}
@@ -878,12 +1326,19 @@ export default function HistoryPage() {
 
         {/* Desktop Table */}
         <div className="hidden md:block bg-white/80 backdrop-blur-sm border border-white/20 rounded-2xl shadow-lg overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100">
+          <div className="p-5 border-b border-gray-100 flex items-center justify-between">
             <h2 className="text-lg md:text-xl font-semibold text-gray-800 flex items-center gap-2">
               <History className="w-5 h-5 text-green-500" />
-              Quotations ({filtered.length})
+              Quotations ({groupedQuotations.length})
             </h2>
           </div>
+
+          {quotationFetchError && (
+            <div className="px-6 py-3 border-b border-gray-100 text-sm text-red-700 bg-red-50">
+              {quotationFetchError}
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="bg-gray-50">
@@ -901,66 +1356,104 @@ export default function HistoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filtered.map((quot, i) => (
-                  <tr
-                    key={quot.id}
-                    className={`${
-                      i % 2 === 0 ? "bg-white" : "bg-gray-50"
-                    } hover:bg-gray-100 transition`}
-                  >
-                    <td className="px-6 py-4 font-mono text-sm text-gray-900">
-                      {quot.id}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                          {getCustomerName(quot.customerId)[0]}
+                {loadingQuotations
+                  ? Array.from({ length: 6 }).map((_, i) => (
+                    <tr
+                      key={`sk-${i}`}
+                      className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}
+                    >
+                      <td className="px-6 py-4">
+                        <div className="h-4 w-24 bg-gray-200 rounded animate-pulse" />
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 bg-gray-200 rounded-full animate-pulse" />
+                          <div className="h-4 w-40 bg-gray-200 rounded animate-pulse" />
                         </div>
-                        <span className="text-sm font-medium text-gray-900">
-                          {getCustomerName(quot.customerId)}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-600">
-                      {quot.items.length} items
-                    </td>
-                    <td className="px-6 py-4 font-medium text-gray-900">
-                      ₹{quot.total.toLocaleString()}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-600">
-                      {new Date(quot.createdAt).toLocaleDateString()}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => openEdit(quot)}
-                          className="text-green-600 hover:text-green-800 p-1.5 rounded hover:bg-green-50"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => openSend(quot)}
-                          className="text-orange-600 hover:text-orange-800 p-1.5 rounded hover:bg-orange-50"
-                        >
-                          <Send className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => downloadPDF(quot)}
-                          className="text-red-600 hover:text-red-800 p-1.5 rounded hover:bg-red-50"
-                          title="Download PDF"
-                        >
-                          <FileText className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => openView(quot)}
-                          className="text-blue-600 hover:text-blue-800 p-1.5 rounded hover:bg-blue-50"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-4 w-20 bg-gray-200 rounded animate-pulse" />
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-4 w-20 bg-gray-200 rounded animate-pulse" />
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-4 w-24 bg-gray-200 rounded animate-pulse" />
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-2">
+                          <div className="h-8 w-8 bg-gray-200 rounded animate-pulse" />
+                          <div className="h-8 w-8 bg-gray-200 rounded animate-pulse" />
+                          <div className="h-8 w-8 bg-gray-200 rounded animate-pulse" />
+                          <div className="h-8 w-8 bg-gray-200 rounded animate-pulse" />
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                  : groupedQuotations.map((quot, i) => (
+                    <tr
+                      key={quot.id}
+                      className={`${i % 2 === 0 ? "bg-white" : "bg-gray-50"
+                        } hover:bg-gray-100 transition`}
+                    >
+                      <td className="px-6 py-4 font-mono text-sm text-gray-900">
+                        {quot.customerId}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white text-xs font-bold">
+                            {getCustomerName(quot.customerId)[0]}
+                          </div>
+                          <span className="text-sm font-medium text-gray-900">
+                            {getCustomerName(quot.customerId)}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-600">
+                        {quot.items.length} items
+                      </td>
+                      <td className="px-6 py-4 font-medium text-gray-900">
+                        ₹{quot.total.toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-600">
+                        {new Date(quot.createdAt).toLocaleDateString()}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => openEdit(quot)}
+                            className="text-green-600 hover:text-green-800 p-1.5 rounded hover:bg-green-50"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => openSend(quot)}
+                            className="text-orange-600 hover:text-orange-800 p-1.5 rounded hover:bg-orange-50"
+                          >
+                            <Send className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => downloadPDF(quot)}
+                            className="text-red-600 hover:text-red-800 p-1.5 rounded hover:bg-red-50"
+                            title="Download PDF"
+                            disabled={!!downloadingPdfId}
+                          >
+                            {downloadingPdfId === quot.id ? (
+                              <div className="w-4 h-4 border-2 border-red-600 border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <FileText className="w-4 h-4" />
+                            )}
+                          </button>
+                          <button
+                            onClick={() => openView(quot)}
+                            className="text-blue-600 hover:text-blue-800 p-1.5 rounded hover:bg-blue-50"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>
@@ -968,78 +1461,122 @@ export default function HistoryPage() {
 
         {/* Mobile Cards */}
         <div className="md:hidden space-y-4">
-          {filtered.map((quot) => (
-            <div
-              key={quot.id}
-              className="bg-white/80 backdrop-blur-sm border border-white/20 rounded-2xl p-4 shadow-lg"
-            >
-              <div className="flex justify-between items-start mb-3">
-                <div className="font-mono text-sm font-semibold text-gray-900">
-                  {quot.id}
-                </div>
-                <span
-                  className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(
-                    quot.status
-                  )} flex items-center gap-1`}
-                >
-                  {getStatusIcon(quot.status)}
-                  {quot.status}
-                </span>
-              </div>
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
-                  {getCustomerName(quot.customerId)[0]}
-                </div>
-                <div>
-                  <div className="font-medium text-gray-900">
-                    {getCustomerName(quot.customerId)}
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    {new Date(quot.createdAt).toLocaleDateString()}
-                  </div>
-                </div>
-              </div>
-              <div className="flex justify-between text-sm mb-3">
-                <span className="text-gray-600">{quot.items.length} items</span>
-                <span className="font-semibold text-gray-900">
-                  ₹{quot.total.toLocaleString()}
-                </span>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => openEdit(quot)}
-                  className="flex-1 bg-green-100 text-green-700 py-2 rounded-lg font-medium text-xs flex items-center justify-center gap-1"
-                >
-                  <Edit3 className="w-4 h-4" />
-                  Edit
-                </button>
-                <button
-                  onClick={() => openSend(quot)}
-                  className="flex-1 bg-orange-100 text-orange-700 py-2 rounded-lg font-medium text-xs flex items-center justify-center gap-1"
-                >
-                  <Send className="w-4 h-4" />
-                  Send
-                </button>
-                <button
-                  onClick={() => downloadPDF(quot)}
-                  className="flex-1 bg-red-100 text-red-700 py-2 rounded-lg font-medium text-xs flex items-center justify-center gap-1"
-                >
-                  <FileText className="w-4 h-4" />
-                  PDF
-                </button>
-                <button
-                  onClick={() => openView(quot)}
-                  className="flex-1 bg-blue-100 text-blue-700 py-2 rounded-lg font-medium text-xs flex items-center justify-center gap-1"
-                >
-                  <Eye className="w-4 h-4" />
-                  View
-                </button>
-              </div>
+          {quotationFetchError && (
+            <div className="px-4 py-3 text-sm text-red-700 bg-red-50 rounded-xl border border-red-100">
+              {quotationFetchError}
             </div>
-          ))}
+          )}
+
+          {loadingQuotations
+            ? Array.from({ length: 4 }).map((_, i) => (
+              <div
+                key={`skm-${i}`}
+                className="bg-white/80 backdrop-blur-sm border border-white/20 rounded-2xl p-4 shadow-lg"
+              >
+                <div className="flex justify-between items-start mb-3">
+                  <div className="h-4 w-24 bg-gray-200 rounded animate-pulse" />
+                  <div className="h-5 w-16 bg-gray-200 rounded-full animate-pulse" />
+                </div>
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 bg-gray-200 rounded-full animate-pulse" />
+                  <div className="space-y-2">
+                    <div className="h-4 w-40 bg-gray-200 rounded animate-pulse" />
+                    <div className="h-3 w-24 bg-gray-200 rounded animate-pulse" />
+                  </div>
+                </div>
+                <div className="flex justify-between text-sm mb-3">
+                  <div className="h-4 w-20 bg-gray-200 rounded animate-pulse" />
+                  <div className="h-4 w-16 bg-gray-200 rounded animate-pulse" />
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="h-8 bg-gray-200 rounded-lg animate-pulse" />
+                  <div className="h-8 bg-gray-200 rounded-lg animate-pulse" />
+                  <div className="h-8 bg-gray-200 rounded-lg animate-pulse" />
+                  <div className="h-8 bg-gray-200 rounded-lg animate-pulse" />
+                </div>
+              </div>
+            ))
+            : groupedQuotations.map((quot) => (
+              <div
+                key={quot.id}
+                className="bg-white/80 backdrop-blur-sm border border-white/20 rounded-2xl p-4 shadow-lg"
+              >
+                <div className="flex justify-between items-start mb-3">
+                  <div className="font-mono text-sm font-semibold text-gray-900">
+                    {quot.customerId}
+                  </div>
+                  <span
+                    className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(
+                      quot.status
+                    )} flex items-center gap-1`}
+                  >
+                    {getStatusIcon(quot.status)}
+                    {quot.status}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
+                    {getCustomerName(quot.customerId)[0]}
+                  </div>
+                  <div>
+                    <div className="font-medium text-gray-900">
+                      {getCustomerName(quot.customerId)}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {new Date(quot.createdAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex justify-between text-sm mb-3">
+                  <span className="text-gray-600">
+                    {quot.items.length} items
+                  </span>
+                  <span className="font-semibold text-gray-900">
+                    ₹{quot.total.toLocaleString()}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => openEdit(quot)}
+                    className="flex-1 bg-green-100 text-green-700 py-2 rounded-lg font-medium text-xs flex items-center justify-center gap-1"
+                  >
+                    <Edit3 className="w-4 h-4" />
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => openSend(quot)}
+                    className="flex-1 bg-orange-100 text-orange-700 py-2 rounded-lg font-medium text-xs flex items-center justify-center gap-1"
+                  >
+                    <Send className="w-4 h-4" />
+                    Send
+                  </button>
+                  <button
+                    onClick={() => downloadPDF(quot)}
+                    disabled={!!downloadingPdfId}
+                    className="flex-1 bg-red-100 text-red-700 py-2 rounded-lg font-medium text-xs flex items-center justify-center gap-1"
+                  >
+                    {downloadingPdfId === quot.id ? (
+                      <div className="w-4 h-4 border-2 border-red-700 border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <>
+                        <FileText className="w-4 h-4" />
+                        PDF
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => openView(quot)}
+                    className="flex-1 bg-blue-100 text-blue-700 py-2 rounded-lg font-medium text-xs flex items-center justify-center gap-1"
+                  >
+                    <Eye className="w-4 h-4" />
+                    View
+                  </button>
+                </div>
+              </div>
+            ))}
         </div>
 
-        {filtered.length === 0 && (
+        {groupedQuotations.length === 0 && (
           <div className="text-center py-16">
             <History className="mx-auto h-12 w-12 text-gray-400 mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">

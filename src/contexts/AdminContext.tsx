@@ -1,6 +1,12 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  ReactNode,
+} from "react";
 import type { Customer, Product } from "@/src/types/index";
 import { DUMMY_CUSTOMERS, DUMMY_PRODUCTS } from "@/src/utils/dummy-data";
 
@@ -8,6 +14,8 @@ interface AdminContextType {
   customers: Customer[];
   products: Product[];
   employees: any[];
+  loadingCustomers: boolean;
+  loadingProducts: boolean;
   addCustomer: (customer: Customer) => void;
   updateCustomer: (id: string, updates: Partial<Customer>) => void;
   deleteCustomer: (id: string) => void;
@@ -21,6 +29,8 @@ const AdminContext = createContext<AdminContextType | undefined>(undefined);
 export function AdminProvider({ children }: { children: ReactNode }) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [loadingCustomers, setLoadingCustomers] = useState(true);
+  const [loadingProducts, setLoadingProducts] = useState(true);
   const [loaded, setLoaded] = useState(false);
 
   const employees = [
@@ -48,40 +58,71 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const loadData = () => {
       try {
-        // Customers: prefer unified key, fallback to legacy and employee-specific keys
-        const savedCustomers = localStorage.getItem("admin-customers");
-        let customersData = savedCustomers ? JSON.parse(savedCustomers) : null;
-        if (!customersData) {
-          const legacyCustomers = localStorage.getItem("customers");
-          const employeeCustomers = localStorage.getItem("employee-customers");
-          const legacy = legacyCustomers ? JSON.parse(legacyCustomers) : [];
-          const emp = employeeCustomers ? JSON.parse(employeeCustomers) : [];
-          // Merge and de-duplicate by id, fallback to DUMMY if empty
-          const map = new Map<string, any>();
-          [...legacy, ...emp].forEach((c) => map.set(c.id, c));
-          const merged = map.size > 0 ? Array.from(map.values()) : DUMMY_CUSTOMERS;
-          customersData = merged;
-          // Persist migration to unified key
-          localStorage.setItem("admin-customers", JSON.stringify(customersData));
-        }
-        setCustomers(customersData);
+        // Customers: Try fetching from Google Sheet
+        const fetchCustomers = async () => {
+          try {
+            const SCRIPT_URL =
+              "https://script.google.com/macros/s/AKfycbxVMOglX1D5V_Vbno5gx1E1Zw0jd2YjWQqDbdRpQA-l2Z_UzLaaTZxHyPu0ZLKQVxBu/exec";
+            const SPREADSHEET_ID =
+              "11G2LjQ4k-44_vnbgb1LREfrOqbr2RQ7HJ3ANw8d3clc";
 
-        // Products: prefer unified key, fallback to legacy
-        const savedProducts = localStorage.getItem("admin-products");
-        let productsData = savedProducts ? JSON.parse(savedProducts) : null;
-        if (!productsData) {
-          const legacyProducts = localStorage.getItem("products");
-          productsData = legacyProducts
-            ? JSON.parse(legacyProducts)
-            : DUMMY_PRODUCTS;
-          // Persist migration to unified key
-          localStorage.setItem("admin-products", JSON.stringify(productsData));
-        }
-        setProducts(productsData);
+            const response = await fetch(
+              `${SCRIPT_URL}?spreadsheetId=${SPREADSHEET_ID}&sheet=Customers`
+            );
+            const json = await response.json();
+
+            if (
+              json.success &&
+              json.data &&
+              Array.isArray(json.data) &&
+              json.data.length > 0
+            ) {
+              const rows = json.data.slice(1);
+              if (rows.length > 0) {
+                const sheetCustomers: Customer[] = rows.map((row: any[]) => ({
+                  id: row[1]?.toString() || `cust-${Math.random()}`,
+                  name: row[2]?.toString() || "Unknown",
+                  phone: row[3]?.toString() || "",
+                  whatsapp: row[4]?.toString() || "",
+                  email: row[5]?.toString() || "",
+                  tags: ["sheet"],
+                  assignedEmployeeId: "emp-1",
+                  createdAt: row[0]?.toString() || new Date().toISOString(),
+                  address: "",
+                  city: "",
+                  notes: "",
+                }));
+                setCustomers(sheetCustomers);
+                setLoadingCustomers(false);
+                return;
+              }
+            }
+          } catch (err) {
+            console.error(
+              "Google Sheet fetch failed, falling back to local storage",
+              err
+            );
+          }
+
+          // FALLBACK: if Google Sheet fails, set empty (no localStorage)
+          setCustomers([]);
+          setLoadingCustomers(false);
+        };
+
+        fetchCustomers();
+
+        // Products: if Google Sheet fetch fails, use empty (no localStorage)
+        const fetchProducts = async () => {
+          setProducts([]);
+          setLoadingProducts(false);
+        };
+        fetchProducts();
       } catch (error) {
-        console.error("Failed to load data from localStorage:", error);
-        setCustomers(DUMMY_CUSTOMERS);
-        setProducts(DUMMY_PRODUCTS);
+        console.error("Failed to load data:", error);
+        setCustomers([]);
+        setProducts([]);
+        setLoadingCustomers(false);
+        setLoadingProducts(false);
       }
     };
 
@@ -89,97 +130,81 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     setLoaded(true);
   }, []);
 
-  /* ==================== Save to localStorage on change ==================== */
-  useEffect(() => {
-    if (!loaded) return;
-    try {
-      const json = JSON.stringify(customers);
-      localStorage.setItem("admin-customers", json);
-      localStorage.setItem("customers", json);
-    } catch {}
-  }, [customers, loaded]);
-
-  useEffect(() => {
-    if (!loaded) return;
-    try {
-      const json = JSON.stringify(products);
-      localStorage.setItem("admin-products", json);
-      localStorage.setItem("products", json);
-    } catch {}
-  }, [products, loaded]);
-
   /* ==================== CRUD: Customers ==================== */
-  const addCustomer = (customer: Customer) => {
-    setCustomers((prev) => {
-      const updated = [...prev, customer];
-      try {
-        const json = JSON.stringify(updated);
-        localStorage.setItem("admin-customers", json);
-        localStorage.setItem("customers", json);
-      } catch {}
-      return updated;
-    });
+  const addCustomer = async (customer: Customer) => {
+    // Generate timestamp and sequential Customer ID on frontend
+    const timestamp = new Date().toISOString();
+    const lastId = customers.length
+      ? customers.reduce((max: number, c: Customer) => {
+          const match = String(c.id).match(/(\d+)/);
+          return match ? Math.max(max, parseInt(match[1], 10)) : max;
+        }, 0)
+      : 0;
+    const nextNum = lastId + 1;
+    const customerId = `CUST-${String(nextNum).padStart(4, "0")}`;
+
+    // 1. Optimistic UI update with generated values
+    const enriched = { ...customer, id: customerId, createdAt: timestamp };
+    setCustomers((prev) => [...prev, enriched]);
+
+    // 2. Send to Google Sheet (include timestamp + customerId in rowData)
+    try {
+      const SCRIPT_URL =
+        "https://script.google.com/macros/s/AKfycbxVMOglX1D5V_Vbno5gx1E1Zw0jd2YjWQqDbdRpQA-l2Z_UzLaaTZxHyPu0ZLKQVxBu/exec";
+
+      const params = new URLSearchParams();
+      params.append("action", "insert");
+      params.append("sheetName", "Customers");
+      params.append(
+        "rowData",
+        JSON.stringify([
+          timestamp,
+          customerId,
+          customer.name,
+          customer.phone,
+          customer.whatsapp || "",
+          customer.email || "",
+        ])
+      );
+
+      const response = await fetch(SCRIPT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      });
+
+      const json = await response.json().catch(() => null);
+      console.log("Customer sent to Google Sheet (Admin)", json);
+    } catch (err) {
+      console.error("Failed to save to Google Sheet", err);
+    }
   };
 
   const updateCustomer = (id: string, updates: Partial<Customer>) => {
-    setCustomers((prev) => {
-      const updated = prev.map((c) => (c.id === id ? { ...c, ...updates } : c));
-      try {
-        const json = JSON.stringify(updated);
-        localStorage.setItem("admin-customers", json);
-        localStorage.setItem("customers", json);
-      } catch {}
-      return updated;
-    });
+    setCustomers((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, ...updates } : c))
+    );
   };
 
   const deleteCustomer = (id: string) => {
-    setCustomers((prev) => {
-      const updated = prev.filter((c) => c.id !== id);
-      try {
-        const json = JSON.stringify(updated);
-        localStorage.setItem("admin-customers", json);
-        localStorage.setItem("customers", json);
-      } catch {}
-      return updated;
-    });
+    setCustomers((prev) => prev.filter((c) => c.id !== id));
   };
 
   /* ==================== CRUD: Products ==================== */
   const addProduct = (product: Product) => {
-    setProducts((prev) => {
-      const updated = [...prev, product];
-      try {
-        const json = JSON.stringify(updated);
-        localStorage.setItem("admin-products", json);
-        localStorage.setItem("products", json);
-      } catch {}
-      return updated;
-    });
+    setProducts((prev) => [...prev, product]);
   };
 
   const updateProduct = (id: string, updates: Partial<Product>) => {
-    setProducts((prev) => {
-      const updated = prev.map((p) => (p.id === id ? { ...p, ...updates } : p));
-      try {
-        const json = JSON.stringify(updated);
-        localStorage.setItem("admin-products", json);
-        localStorage.setItem("products", json);
-      } catch {}
-      return updated;
-    });
+    setProducts((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
+    );
   };
 
   const deleteProduct = (id: string) => {
-    setProducts((prev) => {
-      const updated = prev.filter((p) => p.id !== id);
-      try {
-        const json = JSON.stringify(updated);
-        localStorage.setItem("admin-products", json);
-        localStorage.setItem("products", json);
-      } catch {}
-      return updated;
-    });
+    setProducts((prev) => prev.filter((p) => p.id !== id));
   };
 
   return (
@@ -188,6 +213,8 @@ export function AdminProvider({ children }: { children: ReactNode }) {
         customers,
         products,
         employees,
+        loadingCustomers,
+        loadingProducts,
         addCustomer,
         updateCustomer,
         deleteCustomer,

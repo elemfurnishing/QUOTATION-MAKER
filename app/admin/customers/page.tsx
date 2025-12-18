@@ -22,12 +22,23 @@ import {
 /*                           MAIN PAGE COMPONENT                         */
 /* --------------------------------------------------------------------- */
 export default function AdminCustomersPage() {
-  const { customers, addCustomer, updateCustomer, deleteCustomer } = useAdmin();
+  const {
+    customers,
+    addCustomer,
+    updateCustomer,
+    deleteCustomer,
+    loadingCustomers,
+  } = useAdmin();
   const { user } = useAuth();
+
+  const SCRIPT_URL =
+    "https://script.google.com/macros/s/AKfycbxVMOglX1D5V_Vbno5gx1E1Zw0jd2YjWQqDbdRpQA-l2Z_UzLaaTZxHyPu0ZLKQVxBu/exec";
+  const CUSTOMERS_SHEET_NAME = "Customers";
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<any | null>(null);
   const [viewingCustomer, setViewingCustomer] = useState<any | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
@@ -69,7 +80,7 @@ export default function AdminCustomersPage() {
     setEditingCustomer(null);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.phone) {
       alert("Name and Phone are required");
@@ -77,14 +88,79 @@ export default function AdminCustomersPage() {
     }
 
     if (editingCustomer) {
-      updateCustomer(editingCustomer.id, formData);
+      setIsSubmitting(true);
       try {
-        const next = customers.map((c) =>
-          c.id === editingCustomer.id ? { ...c, ...formData } : c
-        );
-        localStorage.setItem("admin-customers", JSON.stringify(next));
-      } catch {}
-      alert("Customer updated!");
+        const findCustomerRowIndex = async (customerId: string) => {
+          const res = await fetch(
+            `${SCRIPT_URL}?sheet=${encodeURIComponent(CUSTOMERS_SHEET_NAME)}`
+          );
+          const json = await res.json().catch(() => null);
+          if (!json?.success || !Array.isArray(json?.data)) {
+            throw new Error(json?.error || "Failed to fetch Customers sheet");
+          }
+
+          const rows: any[][] = json.data;
+          const dataRows = rows.slice(1);
+          for (let i = 0; i < dataRows.length; i++) {
+            const row = dataRows[i] || [];
+            const rowCustomerId = String(row?.[1] ?? "").trim();
+            if (rowCustomerId === String(customerId).trim()) {
+              return i + 2;
+            }
+          }
+
+          return null;
+        };
+
+        const updateSheetCell = async (
+          rowIndex: number,
+          columnIndex: number,
+          value: string
+        ) => {
+          const body = new URLSearchParams();
+          body.append("action", "updateCell");
+          body.append("sheetName", CUSTOMERS_SHEET_NAME);
+          body.append("rowIndex", String(rowIndex));
+          body.append("columnIndex", String(columnIndex));
+          body.append("value", value);
+
+          const res = await fetch(SCRIPT_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: body.toString(),
+          });
+
+          const json = await res.json().catch(() => null);
+          if (!res.ok || !json?.success) {
+            throw new Error(json?.error || "Failed to update Customers sheet");
+          }
+        };
+
+        const rowIndex = await findCustomerRowIndex(editingCustomer.id);
+        if (!rowIndex) {
+          throw new Error(
+            `Customer ${editingCustomer.id} not found in Customers sheet`
+          );
+        }
+
+        // Columns in Customers sheet (1-based):
+        // A Timestamp, B Customer ID, C Customer Name, D Phone, E Whatsapp, F Email
+        await updateSheetCell(rowIndex, 3, formData.name);
+        await updateSheetCell(rowIndex, 4, formData.phone);
+        await updateSheetCell(rowIndex, 5, formData.whatsapp || "");
+        await updateSheetCell(rowIndex, 6, formData.email || "");
+
+        updateCustomer(editingCustomer.id, formData);
+        alert("Customer updated!");
+        resetForm();
+      } catch (err: any) {
+        console.error("Failed to update Customers sheet", err);
+        alert(err?.message || "Failed to update Customers sheet");
+      } finally {
+        setIsSubmitting(false);
+      }
     } else {
       const newCust = {
         id: `cust-${Date.now()}`,
@@ -94,13 +170,9 @@ export default function AdminCustomersPage() {
         createdAt: new Date().toISOString(),
       };
       addCustomer(newCust);
-      try {
-        const next = [...customers, newCust];
-        localStorage.setItem("admin-customers", JSON.stringify(next));
-      } catch {}
       alert("Customer added!");
+      resetForm();
     }
-    resetForm();
   };
 
   const openEdit = (c: any) => {
@@ -114,21 +186,80 @@ export default function AdminCustomersPage() {
   };
 
   const confirmDelete = (c: any) => {
-    if (window.confirm(`Delete ${c.name}? This cannot be undone.`)) {
-      deleteCustomer(c.id);
+    const run = async () => {
+      if (!window.confirm(`Delete ${c.name}? This cannot be undone.`)) return;
+
       try {
-        const next = customers.filter((x) => x.id !== c.id);
-        localStorage.setItem("admin-customers", JSON.stringify(next));
-      } catch {}
-      alert("Customer deleted");
-    }
+        const findCustomerRowIndex = async (customerId: string) => {
+          const res = await fetch(
+            `${SCRIPT_URL}?sheet=${encodeURIComponent(CUSTOMERS_SHEET_NAME)}`
+          );
+          const json = await res.json().catch(() => null);
+          if (!json?.success || !Array.isArray(json?.data)) {
+            throw new Error(json?.error || "Failed to fetch Customers sheet");
+          }
+
+          const rows: any[][] = json.data;
+          const dataRows = rows.slice(1);
+          for (let i = 0; i < dataRows.length; i++) {
+            const row = dataRows[i] || [];
+            const rowCustomerId = String(row?.[1] ?? "").trim();
+            if (rowCustomerId === String(customerId).trim()) {
+              return i + 2;
+            }
+          }
+
+          return null;
+        };
+
+        const deleteSheetRow = async (rowIndex: number) => {
+          const body = new URLSearchParams();
+          body.append("action", "delete");
+          body.append("sheetName", CUSTOMERS_SHEET_NAME);
+          body.append("rowIndex", String(rowIndex));
+
+          const res = await fetch(SCRIPT_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: body.toString(),
+          });
+
+          const json = await res.json().catch(() => null);
+          if (!res.ok || !json?.success) {
+            throw new Error(
+              json?.error || "Failed to delete row in Customers sheet"
+            );
+          }
+        };
+
+        const rowIndex = await findCustomerRowIndex(c.id);
+        if (!rowIndex) {
+          throw new Error(`Customer ${c.id} not found in Customers sheet`);
+        }
+
+        await deleteSheetRow(rowIndex);
+
+        deleteCustomer(c.id);
+        try {
+          const next = customers.filter((x) => x.id !== c.id);
+          localStorage.setItem("admin-customers", JSON.stringify(next));
+        } catch {}
+        alert("Customer deleted");
+      } catch (err: any) {
+        console.error("Failed to delete customer from Customers sheet", err);
+        alert(err?.message || "Failed to delete customer from Customers sheet");
+      }
+    };
+
+    run();
   };
 
   /* ----------------------------------------------------------------- */
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
-
         {/* ---------- HEADER ---------- */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 md:mb-8">
           <h1 className="hidden sm:flex text-2xl md:text-4xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent items-center gap-2">
@@ -193,7 +324,9 @@ export default function AdminCustomersPage() {
                   type="text"
                   placeholder="Customer name"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, name: e.target.value })
+                  }
                   required
                 />
                 <InputField
@@ -201,7 +334,9 @@ export default function AdminCustomersPage() {
                   type="tel"
                   placeholder="Phone number"
                   value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, phone: e.target.value })
+                  }
                   required
                 />
                 <InputField
@@ -209,23 +344,38 @@ export default function AdminCustomersPage() {
                   type="tel"
                   placeholder="WhatsApp number"
                   value={formData.whatsapp}
-                  onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, whatsapp: e.target.value })
+                  }
                 />
                 <InputField
                   label="Email"
                   type="email"
                   placeholder="Email address"
                   value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, email: e.target.value })
+                  }
                 />
 
                 <div className="flex gap-3 pt-2">
                   <button
                     type="submit"
-                    className="flex-1 bg-gradient-to-r from-green-500 to-green-600 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-2"
+                    disabled={isSubmitting}
+                    className="flex-1 bg-gradient-to-r from-green-500 to-green-600 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
                   >
-                    <Save className="w-4 h-4" />
-                    {editingCustomer ? "Update" : "Save"}
+                    {isSubmitting ? (
+                      <span className="w-4 h-4 rounded-full border-2 border-white/70 border-t-white animate-spin" />
+                    ) : (
+                      <Save className="w-4 h-4" />
+                    )}
+                    {isSubmitting
+                      ? editingCustomer
+                        ? "Updating..."
+                        : "Saving..."
+                      : editingCustomer
+                      ? "Update"
+                      : "Save"}
                   </button>
                   <button
                     type="button"
@@ -324,94 +474,147 @@ export default function AdminCustomersPage() {
             <table className="w-full">
               <thead className="bg-gray-50">
                 <tr>
-                  {["Name", "Email", "Phone", "WhatsApp", "Actions"].map((h) => (
-                    <th
-                      key={h}
-                      className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
-                      {h}
-                    </th>
-                  ))}
+                  {["Name", "Email", "Phone", "WhatsApp", "Actions"].map(
+                    (h) => (
+                      <th
+                        key={h}
+                        className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                      >
+                        {h}
+                      </th>
+                    )
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filteredCustomers.map((c, i) => (
-                  <CustomerRow
-                    key={c.id}
-                    customer={c}
-                    index={i}
-                    openView={(cust) => setViewingCustomer(cust)}
-                    openEdit={openEdit}
-                    deleteCustomer={() => confirmDelete(c)}
-                  />
-                ))}
+                {loadingCustomers
+                  ? // Skeleton rows
+                    Array.from({ length: 5 }).map((_, i) => (
+                      <tr key={i}>
+                        <td className="px-6 py-4">
+                          <div className="h-4 bg-gray-200 rounded w-3/4 animate-pulse"></div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="h-4 bg-gray-200 rounded w-1/2 animate-pulse"></div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="h-4 bg-gray-200 rounded w-2/3 animate-pulse"></div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="h-4 bg-gray-200 rounded w-2/3 animate-pulse"></div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="h-4 bg-gray-200 rounded w-1/3 animate-pulse"></div>
+                        </td>
+                      </tr>
+                    ))
+                  : filteredCustomers.map((c, i) => (
+                      <CustomerRow
+                        key={c.id}
+                        customer={c}
+                        index={i}
+                        openView={(cust) => setViewingCustomer(cust)}
+                        openEdit={openEdit}
+                        deleteCustomer={() => confirmDelete(c)}
+                      />
+                    ))}
               </tbody>
             </table>
           </div>
 
           {/* Mobile Cards */}
           <div className="md:hidden p-4 space-y-4">
-            {filteredCustomers.map((c, i) => (
-              <div
-                key={c.id}
-                className={`p-4 rounded-xl border ${
-                  i % 2 === 0 ? "bg-white border-gray-100" : "bg-gray-50 border-transparent"
-                } shadow-sm hover:shadow-md transition-all`}
-              >
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-12 h-12 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
-                    {c.name.charAt(0).toUpperCase()}
+            {loadingCustomers
+              ? // Skeleton cards
+                Array.from({ length: 5 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="p-4 rounded-xl border bg-white shadow-sm"
+                  >
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-12 h-12 bg-gray-200 rounded-full animate-pulse"></div>
+                      <div className="flex-1">
+                        <div className="h-4 bg-gray-200 rounded w-3/4 mb-2 animate-pulse"></div>
+                        <div className="h-3 bg-gray-200 rounded w-1/2 animate-pulse"></div>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="h-3 bg-gray-200 rounded w-2/3 animate-pulse"></div>
+                      <div className="h-3 bg-gray-200 rounded w-1/2 animate-pulse"></div>
+                      <div className="h-3 bg-gray-200 rounded w-2/3 animate-pulse"></div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mt-4">
+                      <div className="h-7 bg-gray-200 rounded animate-pulse"></div>
+                      <div className="h-7 bg-gray-200 rounded animate-pulse"></div>
+                      <div className="h-7 bg-gray-200 rounded animate-pulse"></div>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-gray-900">{c.name}</h3>
-                    <p className="text-xs text-gray-500">{c.id}</p>
-                  </div>
-                </div>
+                ))
+              : filteredCustomers.map((c, i) => (
+                  <div
+                    key={c.id}
+                    className={`p-4 rounded-xl border ${
+                      i % 2 === 0
+                        ? "bg-white border-gray-100"
+                        : "bg-gray-50 border-transparent"
+                    } shadow-sm hover:shadow-md transition-all`}
+                  >
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-12 h-12 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
+                        {c.name.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-gray-900">
+                          {c.name}
+                        </h3>
+                        <p className="text-xs text-gray-500">{c.id}</p>
+                      </div>
+                    </div>
 
-                <div className="space-y-2 text-sm">
-                  <div className="flex items-center gap-2 text-gray-600">
-                    <Mail className="w-4 h-4" />
-                    <span className="truncate">{c.email || "—"}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-gray-600">
-                    <Phone className="w-4 h-4" />
-                    <span>{c.phone}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-green-600">
-                    <MessageCircle className="w-4 h-4" />
-                    <span>{c.whatsapp || "—"}</span>
-                  </div>
-                </div>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex items-center gap-2 text-gray-600">
+                        <Mail className="w-4 h-4" />
+                        <span className="truncate">{c.email || "—"}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-gray-600">
+                        <Phone className="w-4 h-4" />
+                        <span>{c.phone}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-green-600">
+                        <MessageCircle className="w-4 h-4" />
+                        <span>{c.whatsapp || "—"}</span>
+                      </div>
+                    </div>
 
-                <div className="grid grid-cols-3 gap-2 mt-4">
-                  <button
-                    onClick={() => setViewingCustomer(c)}
-                    className="flex items-center justify-center gap-1 py-2 bg-blue-100 text-blue-700 rounded-lg text-xs font-medium"
-                  >
-                    <Eye className="w-4 h-4" />
-                    View
-                  </button>
-                  <button
-                    onClick={() => openEdit(c)}
-                    className="flex items-center justify-center gap-1 py-2 bg-green-100 text-green-700 rounded-lg text-xs font-medium"
-                  >
-                    <Edit3 className="w-4 h-4" />
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => confirmDelete(c)}
-                    className="flex items-center justify-center gap-1 py-2 bg-red-100 text-red-700 rounded-lg text-xs font-medium"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))}
+                    <div className="grid grid-cols-3 gap-2 mt-4">
+                      <button
+                        onClick={() => setViewingCustomer(c)}
+                        className="flex items-center justify-center gap-1 py-2 bg-blue-100 text-blue-700 rounded-lg text-xs font-medium"
+                      >
+                        <Eye className="w-4 h-4" />
+                        View
+                      </button>
+                      <button
+                        onClick={() => openEdit(c)}
+                        className="flex items-center justify-center gap-1 py-2 bg-green-100 text-green-700 rounded-lg text-xs font-medium"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => confirmDelete(c)}
+                        className="flex items-center justify-center gap-1 py-2 bg-red-100 text-red-700 rounded-lg text-xs font-medium"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
           </div>
 
           {/* Empty state */}
-          {filteredCustomers.length === 0 && (
+          {!loadingCustomers && filteredCustomers.length === 0 && (
             <div className="text-center py-12 px-4">
               {searchQuery ? (
                 <>

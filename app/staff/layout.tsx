@@ -21,16 +21,8 @@ export default function StaffLayout({
 
   if (!mounted || !isAuthenticated) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: "linear-gradient(to bottom right, #1e40af, #1e3a8a)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <div style={{ color: "white", fontSize: "1.125rem" }}>Loading...</div>
+      <div className="flex items-center justify-center min-h-screen bg-white">
+        <div style={{ color: "#6b7280", fontSize: "1.125rem" }}>Loading...</div>
       </div>
     );
   }
@@ -43,9 +35,9 @@ export default function StaffLayout({
           <div className="fixed inset-y-0 left-0 z-30">
             <EmployeeSidebar />
           </div>
-          
+
           {/* Scrollable Content */}
-          <main className="flex-1 min-h-screen overflow-y-auto bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6 ml-0 md:ml-[14rem] pt-16 md:pt-6">
+          <main className="flex-1 min-h-screen overflow-y-auto bg-white p-4 md:p-6 ml-0 md:ml-[14rem] pt-16 md:pt-6">
             <div className="max-w-7xl mx-auto w-full">{children}</div>
           </main>
         </div>

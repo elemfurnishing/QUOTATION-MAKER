@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 
 export default function StaffDashboard() {
-  const { quotations } = useEmployee();
+  const { quotations, customers, loadingQuotations } = useEmployee();
   const { user } = useAuth();
   const [currentTime, setCurrentTime] = useState(new Date());
   const [searchTerm, setSearchTerm] = useState("");
@@ -60,14 +60,7 @@ export default function StaffDashboard() {
       ? ((approvedQuotations.length / quotations.length) * 100).toFixed(1)
       : 0;
 
-  const recentActivities = quotations
-    .filter((q) => {
-      const sevenDaysAgo = new Date();
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-      return new Date(q.createdAt) > sevenDaysAgo;
-    })
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 5);
+
 
   const quickActions = [
     {
@@ -96,6 +89,26 @@ export default function StaffDashboard() {
     },
   ];
 
+  if (loadingQuotations) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-4 md:p-8">
+        <div className="max-w-7xl mx-auto space-y-6">
+          <div className="h-10 w-48 bg-slate-200 rounded animate-pulse" />
+          <div className="grid grid-cols-2 gap-3">
+            {[1, 2].map((i) => (
+              <div
+                key={i}
+                className="h-20 bg-white rounded-xl shadow-sm animate-pulse"
+              />
+            ))}
+          </div>
+          <div className="h-12 bg-white rounded-xl animate-pulse" />
+          <div className="h-96 bg-white rounded-xl shadow-lg border border-white/20 animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
@@ -122,7 +135,7 @@ export default function StaffDashboard() {
         </div>
 
         {/* Quick Stats - Mobile Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           {[
             {
               label: "Today",
@@ -130,18 +143,23 @@ export default function StaffDashboard() {
               icon: <Calendar className="w-4 h-4" />,
             },
             {
-              label: "Drafts",
-              value: pendingQuotations.length,
-              icon: <Clock className="w-4 h-4" />,
+              label: "Total Customers",
+              value: customers.length,
+              icon: <Users className="w-4 h-4" />,
             },
             {
-              label: "Sent",
-              value: sentQuotations.length,
-              icon: <Send className="w-4 h-4" />,
+              label: "Total Items (Qty)",
+              value: quotations.reduce(
+                (acc, q) => acc + q.items.reduce((s, i) => s + i.quantity, 0),
+                0
+              ),
+              icon: <FileText className="w-4 h-4" />,
             },
             {
-              label: "Monthly",
-              value: `₹${monthlyRevenue.toLocaleString()}`,
+              label: "Total Subtotal",
+              value: `₹${quotations
+                .reduce((acc, q) => acc + q.subtotal, 0)
+                .toLocaleString()}`,
               icon: <TrendingUp className="w-4 h-4" />,
             },
           ].map((stat) => (
@@ -210,83 +228,89 @@ export default function StaffDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {filteredQuotations.slice(0, 10).map((quot, i) => (
-                  <tr
-                    key={quot.id}
-                    className={`hover:bg-slate-50 transition-colors ${
-                      i % 2 === 0 ? "bg-white" : "bg-slate-50"
-                    }`}
-                  >
-                    <td className="px-6 py-4 font-mono font-medium text-slate-900">
-                      {quot.id}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                          {quot.customerId[0].toUpperCase()}
-                        </div>
-                        <div>
-                          <div className="font-medium text-slate-900">
-                            Customer {quot.customerId}
+                {filteredQuotations.slice(0, 10).map((quot, i) => {
+                  // Resolve Customer
+                  const customer = customers.find(c => c.id === quot.customerId);
+                  return (
+                    <tr
+                      key={quot.id}
+                      className={`hover:bg-slate-50 transition-colors ${i % 2 === 0 ? "bg-white" : "bg-slate-50"
+                        }`}
+                    >
+                      <td className="px-6 py-4 font-mono font-medium text-slate-900">
+                        {quot.id}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full flex items-center justify-center text-white text-xs font-bold">
+                            {quot.customerId[0]?.toUpperCase() || "?"}
                           </div>
-                          <div className="text-xs text-slate-600">
-                            {quot.email || "No email"}
+                          <div>
+                            <div className="font-medium text-slate-900">
+                              {customer?.name || `Customer ${quot.customerId}`}
+                            </div>
+                            <div className="text-xs text-slate-600">
+                              {customer?.email || "No email"}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 font-medium text-slate-900">
-                      ₹{quot.total.toLocaleString()}
-                    </td>
-                    <td className="px-6 py-4 text-slate-600">
-                      {new Date(quot.createdAt).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-6 py-4 font-medium text-slate-900">
+                        ₹{quot.total.toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 text-slate-600">
+                        {new Date(quot.createdAt).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
 
           {/* Mobile Cards - Clean & Modern */}
           <div className="md:hidden p-4 space-y-3">
-            {filteredQuotations.slice(0, 10).map((quot) => (
-              <div
-                key={quot.id}
-                className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm"
-              >
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <div className="font-mono font-bold text-slate-900 text-sm">
-                      {quot.id}
+            {filteredQuotations.slice(0, 10).map((quot) => {
+              const customer = customers.find(c => c.id === quot.customerId);
+              return (
+                <div
+                  key={quot.id}
+                  className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm"
+                >
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <div className="font-mono font-bold text-slate-900 text-sm">
+                        {quot.id}
+                      </div>
+                      <div className="text-xs text-slate-600 mt-1">
+                        {new Date(quot.createdAt).toLocaleDateString()}
+                      </div>
                     </div>
-                    <div className="text-xs text-slate-600 mt-1">
-                      {new Date(quot.createdAt).toLocaleDateString()}
-                    </div>
+                    <StatusBadge status={quot.status} />
                   </div>
-                  <StatusBadge status={quot.status} />
-                </div>
 
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-10 h-10 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
-                    {quot.customerId[0].toUpperCase()}
-                  </div>
-                  <div>
-                    <div className="font-medium text-slate-900 text-sm">
-                      Customer {quot.customerId}
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
+                      {quot.customerId[0]?.toUpperCase() || "?"}
                     </div>
-                    <div className="text-xs text-slate-600">
-                      {quot.email || "No email"}
+                    <div>
+                      <div className="font-medium text-slate-900 text-sm">
+                        {customer?.name || `Customer ${quot.customerId}`}
+                      </div>
+                      <div className="text-xs text-slate-600">
+                        {customer?.email || "No email"}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="flex justify-between items-center mb-3">
-                  <div className="font-bold text-slate-900">
-                    ₹{quot.total.toLocaleString()}
+                  <div className="flex justify-between items-center mb-3">
+                    <div className="font-bold text-slate-900">
+                      ₹{quot.total.toLocaleString()}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Empty State */}
@@ -315,53 +339,7 @@ export default function StaffDashboard() {
         </div>
 
         {/* Recent Activity */}
-        {recentActivities.length > 0 && (
-          <div className="bg-white/80 backdrop-blur-sm border border-white/20 rounded-xl shadow-lg overflow-hidden">
-            <div className="p-4 border-b border-slate-200">
-              <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
-                <Clock className="w-5 h-5" /> Recent Activity (Last 7 Days)
-              </h2>
-            </div>
-            <div className="p-4 space-y-4">
-              {recentActivities.map((activity, i) => (
-                <div
-                  key={activity.id}
-                  className={`flex items-center gap-3 pb-4 ${
-                    i < recentActivities.length - 1
-                      ? "border-b border-slate-100"
-                      : ""
-                  }`}
-                >
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 flex items-center justify-center text-white text-xs">
-                    {activity.status === "draft" && "D"}
-                    {activity.status === "sent" && "S"}
-                    {activity.status === "approved" && "A"}
-                    {activity.status === "rejected" && "R"}
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-medium text-slate-900 text-sm">
-                      Quotation <span className="font-mono">{activity.id}</span>{" "}
-                      {activity.status === "sent"
-                        ? "sent"
-                        : activity.status === "approved"
-                        ? "approved"
-                        : activity.status === "rejected"
-                        ? "rejected"
-                        : "created"}{" "}
-                      for Customer {activity.customerId}
-                    </p>
-                    <p className="text-xs text-slate-600">
-                      {new Date(activity.createdAt).toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="font-bold text-slate-900 text-sm">
-                    ₹{activity.total.toLocaleString()}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+
       </div>
     </div>
   );

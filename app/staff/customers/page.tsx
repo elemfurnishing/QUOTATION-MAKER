@@ -23,21 +23,179 @@ import {
 import Image from "next/image";
 import type { Quotation, QuotationItem } from "@/src/types/index";
 
+const SCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycbxVMOglX1D5V_Vbno5gx1E1Zw0jd2YjWQqDbdRpQA-l2Z_UzLaaTZxHyPu0ZLKQVxBu/exec";
+const DRIVE_FOLDER_ID = "1OjDF5Jr2O5KtRTmxRcSa-ApFuFtyCOxe";
+const QUOTATION_SHEET_NAME = "Customers";
+const QUOTATION_LOG_SHEET_NAME = "Quotation";
+const INVENTORY_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyr8QBIGE3jlMqm3w4r3f-jvRKTJdUKP0Tc4jDITpadSJqQbL8JOC_E6TLXr0xxBJKknA/exec";
+const INVENTORY_SPREADSHEET_ID = "1rKr7wOCQdDRunIvSdBFnGVy1VQGgQvcwXeFqVD9wuFM";
+const INVENTORY_SHEET_NAME = "Inventory";
+
+const parseDataUrl = (dataUrl: string) => {
+  const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
+  if (!match) return null;
+  return { mimeType: match[1], base64Data: match[2] };
+};
+
+const getDisplayableImageUrl = (url: string | null | undefined): string | null => {
+  if (!url) return null;
+
+  try {
+    const directMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (directMatch && directMatch[1]) {
+      return `https://drive.google.com/thumbnail?id=${directMatch[1]}&sz=w400`;
+    }
+
+    const ucMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (ucMatch && ucMatch[1]) {
+      return `https://drive.google.com/thumbnail?id=${ucMatch[1]}&sz=w400`;
+    }
+
+    const openMatch = url.match(/open\?id=([a-zA-Z0-9_-]+)/);
+    if (openMatch && openMatch[1]) {
+      return `https://drive.google.com/thumbnail?id=${openMatch[1]}&sz=w400`;
+    }
+
+    if (url.includes("thumbnail?id=")) {
+      return url;
+    }
+
+    const anyIdMatch = url.match(/([a-zA-Z0-9_-]{25,})/);
+    if (anyIdMatch && anyIdMatch[1]) {
+      return `https://drive.google.com/thumbnail?id=${anyIdMatch[1]}&sz=w400`;
+    }
+
+    return url;
+  } catch (e) {
+    console.error("Error processing image URL:", url, e);
+    return url;
+  }
+};
+
+const uploadImageToDrive = async (dataUrl: string, fileName: string) => {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) throw new Error("Invalid image data");
+
+  const params = new URLSearchParams();
+  params.append("action", "uploadFile");
+  params.append("base64Data", parsed.base64Data);
+  params.append("fileName", fileName);
+  params.append("mimeType", parsed.mimeType);
+  params.append("folderId", DRIVE_FOLDER_ID);
+
+  const res = await fetch(SCRIPT_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: params.toString(),
+  });
+
+  const responseText = await res.text();
+  const json = JSON.parse(responseText);
+  if (!json?.success || !json?.fileUrl) {
+    throw new Error(json?.error || "Image upload failed");
+  }
+  return String(json.fileUrl);
+};
+
+const appendQuotationRowStartingAtG = async (valuesFromG: any[]) => {
+  const rowData = ["", "", "", "", "", "", ...valuesFromG];
+  const params = new URLSearchParams();
+  params.append("action", "insert");
+  params.append("sheetName", QUOTATION_SHEET_NAME);
+  params.append("rowData", JSON.stringify(rowData));
+
+  const res = await fetch(SCRIPT_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: params.toString(),
+  });
+
+  const responseText = await res.text();
+  const json = JSON.parse(responseText);
+  if (!json?.success) {
+    throw new Error(json?.error || "Failed to insert quotation row");
+  }
+};
+
+const appendQuotationLogRow = async (rowData: any[]) => {
+  console.log("=== APPEND QUOTATION LOG ROW STARTED (Customers Modal) ===");
+  console.log("📤 Quotation log rowData:", rowData);
+
+  const params = new URLSearchParams();
+  params.append("action", "insert");
+  params.append("sheetName", QUOTATION_LOG_SHEET_NAME);
+  params.append("rowData", JSON.stringify(rowData));
+
+  const res = await fetch(SCRIPT_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: params.toString(),
+  });
+
+  console.log("📡 Quotation insert response:", {
+    status: res.status,
+    statusText: res.statusText,
+    ok: res.ok,
+  });
+
+  const responseText = await res.text();
+  console.log("📄 Raw quotation insert response:", responseText);
+
+  let json: any = null;
+  try {
+    json = JSON.parse(responseText);
+    console.log("📋 Parsed quotation insert response:", json);
+  } catch {
+    throw new Error(
+      `Quotation insert returned non-JSON response (HTTP ${res.status
+      }). Raw: ${responseText.slice(0, 200)}`
+    );
+  }
+
+  if (!json?.success) {
+    throw new Error(json?.error || "Failed to insert quotation log row");
+  }
+
+  console.log("✅ APPEND QUOTATION LOG ROW FINISHED (Customers Modal)");
+};
+
 export default function CustomersPage() {
-  const { customers, addCustomer, updateCustomer, deleteCustomer } = useAdmin();
+  const {
+    customers,
+    addCustomer,
+    updateCustomer,
+    deleteCustomer,
+    loadingCustomers,
+  } = useAdmin();
   const { createQuotation } = useEmployee();
   const { user } = useAuth();
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<any | null>(null);
   const [viewingCustomer, setViewingCustomer] = useState<any | null>(null);
-  const [showQuotationModal, setShowQuotationModal] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showQuotationModal, setShowQuotationModal] = useState<string | null>(
+    null
+  );
   const [formData, setFormData] = useState({
     name: "",
     phone: "",
     whatsapp: "",
     email: "",
+    image: null as File | null,
+    imageUrl: "",
   });
+
+  // Image upload states
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState("");
@@ -46,7 +204,7 @@ export default function CustomersPage() {
   useEffect(() => {
     try {
       localStorage.setItem("admin-customers", JSON.stringify(customers));
-    } catch {}
+    } catch { }
   }, [customers]);
 
   /* ────────────────────── Filtered Customers ────────────────────── */
@@ -67,12 +225,20 @@ export default function CustomersPage() {
 
   /* ────────────────────── Add / Edit Customer ────────────────────── */
   const resetForm = () => {
-    setFormData({ name: "", phone: "", whatsapp: "", email: "" });
+    setFormData({
+      name: "",
+      phone: "",
+      whatsapp: "",
+      email: "",
+      image: null,
+      imageUrl: "",
+    });
     setShowAddForm(false);
     setEditingCustomer(null);
+    setImagePreview(null);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.phone) {
       alert("Name and Phone are required fields");
@@ -80,14 +246,79 @@ export default function CustomersPage() {
     }
 
     if (editingCustomer) {
-      updateCustomer(editingCustomer.id, formData);
+      setIsSubmitting(true);
       try {
-        const next = customers.map((c) =>
-          c.id === editingCustomer.id ? { ...c, ...formData } : c
-        );
-        localStorage.setItem("admin-customers", JSON.stringify(next));
-      } catch {}
-      alert("Customer updated!");
+        const findCustomerRowIndex = async (customerId: string) => {
+          const res = await fetch(
+            `${SCRIPT_URL}?sheet=${encodeURIComponent(QUOTATION_SHEET_NAME)}`
+          );
+          const json = await res.json().catch(() => null);
+          if (!json?.success || !Array.isArray(json?.data)) {
+            throw new Error(json?.error || "Failed to fetch Customers sheet");
+          }
+
+          const rows: any[][] = json.data;
+          const dataRows = rows.slice(1);
+          for (let i = 0; i < dataRows.length; i++) {
+            const row = dataRows[i] || [];
+            const rowCustomerId = String(row?.[1] ?? "").trim();
+            if (rowCustomerId === String(customerId).trim()) {
+              return i + 2;
+            }
+          }
+
+          return null;
+        };
+
+        const updateSheetCell = async (
+          rowIndex: number,
+          columnIndex: number,
+          value: string
+        ) => {
+          const body = new URLSearchParams();
+          body.append("action", "updateCell");
+          body.append("sheetName", QUOTATION_SHEET_NAME);
+          body.append("rowIndex", String(rowIndex));
+          body.append("columnIndex", String(columnIndex));
+          body.append("value", value);
+
+          const res = await fetch(SCRIPT_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: body.toString(),
+          });
+
+          const json = await res.json().catch(() => null);
+          if (!res.ok || !json?.success) {
+            throw new Error(json?.error || "Failed to update Customers sheet");
+          }
+        };
+
+        const rowIndex = await findCustomerRowIndex(editingCustomer.id);
+        if (!rowIndex) {
+          throw new Error(
+            `Customer ${editingCustomer.id} not found in Customers sheet`
+          );
+        }
+
+        // Apps Script uses 1-based columnIndex.
+        // A Timestamp, B Customer ID, C Customer Name, D Phone, E Whatsapp, F Email
+        await updateSheetCell(rowIndex, 3, formData.name);
+        await updateSheetCell(rowIndex, 4, formData.phone);
+        await updateSheetCell(rowIndex, 5, formData.whatsapp || "");
+        await updateSheetCell(rowIndex, 6, formData.email || "");
+
+        updateCustomer(editingCustomer.id, formData);
+        alert("Customer updated!");
+        resetForm();
+      } catch (err: any) {
+        console.error("Failed to update Customers sheet", err);
+        alert(err?.message || "Failed to update Customers sheet");
+      } finally {
+        setIsSubmitting(false);
+      }
     } else {
       const newCustomer = {
         id: `cust-${Date.now()}`,
@@ -97,42 +328,106 @@ export default function CustomersPage() {
         createdAt: new Date().toISOString(),
       };
       addCustomer(newCustomer);
-      try {
-        const next = [...customers, newCustomer];
-        localStorage.setItem("admin-customers", JSON.stringify(next));
-      } catch {}
       alert("Customer added!");
+      resetForm();
     }
-    resetForm();
   };
 
   const openEdit = (customer: any) => {
     setFormData({
       name: customer.name,
-      email: customer.email,
+      email: customer.email || "",
       phone: customer.phone,
-      whatsapp: customer.whatsapp,
+      whatsapp: customer.whatsapp || "",
+      image: null,
+      imageUrl: customer.imageUrl || "",
     });
     setEditingCustomer(customer);
+    setImagePreview(customer.imageUrl || null);
   };
 
   const confirmDelete = (customer: any) => {
-    if (window.confirm(`Delete ${customer.name}? This cannot be undone.`)) {
-      deleteCustomer(customer.id);
+    const run = async () => {
+      if (!window.confirm(`Delete ${customer.name}? This cannot be undone.`)) {
+        return;
+      }
+
       try {
-        const next = customers.filter((c) => c.id !== customer.id);
-        localStorage.setItem("admin-customers", JSON.stringify(next));
-      } catch {}
-      alert("Customer deleted");
-    }
+        const findCustomerRowIndex = async (customerId: string) => {
+          const res = await fetch(
+            `${SCRIPT_URL}?sheet=${encodeURIComponent(QUOTATION_SHEET_NAME)}`
+          );
+          const json = await res.json().catch(() => null);
+          if (!json?.success || !Array.isArray(json?.data)) {
+            throw new Error(json?.error || "Failed to fetch Customers sheet");
+          }
+
+          const rows: any[][] = json.data;
+          const dataRows = rows.slice(1);
+          for (let i = 0; i < dataRows.length; i++) {
+            const row = dataRows[i] || [];
+            const rowCustomerId = String(row?.[1] ?? "").trim();
+            if (rowCustomerId === String(customerId).trim()) {
+              return i + 2;
+            }
+          }
+
+          return null;
+        };
+
+        const deleteSheetRow = async (rowIndex: number) => {
+          const body = new URLSearchParams();
+          body.append("action", "delete");
+          body.append("sheetName", QUOTATION_SHEET_NAME);
+          body.append("rowIndex", String(rowIndex));
+
+          const res = await fetch(SCRIPT_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: body.toString(),
+          });
+
+          const json = await res.json().catch(() => null);
+          if (!res.ok || !json?.success) {
+            throw new Error(json?.error || "Failed to delete row in sheet");
+          }
+        };
+
+        const rowIndex = await findCustomerRowIndex(customer.id);
+        if (!rowIndex) {
+          throw new Error(
+            `Customer ${customer.id} not found in Customers sheet`
+          );
+        }
+
+        await deleteSheetRow(rowIndex);
+
+        deleteCustomer(customer.id);
+        try {
+          const next = customers.filter((c) => c.id !== customer.id);
+          localStorage.setItem("admin-customers", JSON.stringify(next));
+        } catch { }
+        alert("Customer deleted");
+      } catch (err: any) {
+        console.error("Failed to delete customer from Customers sheet", err);
+        alert(err?.message || "Failed to delete customer from Customers sheet");
+      }
+    };
+
+    run();
   };
 
   /* ────────────────────── Quotation Modal ────────────────────── */
-  const openQuotation = (customerId: string) => setShowQuotationModal(customerId);
+  const openQuotation = (customerId: string) =>
+    setShowQuotationModal(customerId);
   const closeQuotation = () => setShowQuotationModal(null);
 
   const scrollLockRef = useRef(0);
-  const modalOpen = Boolean(showAddForm || editingCustomer || viewingCustomer || showQuotationModal);
+  const modalOpen = Boolean(
+    showAddForm || editingCustomer || viewingCustomer || showQuotationModal
+  );
 
   useEffect(() => {
     const body = document.body;
@@ -152,7 +447,7 @@ export default function CustomersPage() {
   }, [modalOpen]);
 
   return (
-    <div className="custom-scroll min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-4 md:p-6 lg:p-8">
+    <div className="custom-scroll min-h-screen bg-linear-to-br from-gray-50 to-gray-100 p-4 md:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 md:mb-8">
@@ -205,7 +500,10 @@ export default function CustomersPage() {
                 <h2 className="text-lg md:text-xl font-semibold text-gray-800">
                   {editingCustomer ? "Edit Customer" : "New Customer"}
                 </h2>
-                <button onClick={resetForm} className="p-1 rounded-lg hover:bg-gray-100">
+                <button
+                  onClick={resetForm}
+                  className="p-1 rounded-lg hover:bg-gray-100"
+                >
                   <X className="w-5 h-5 text-gray-500" />
                 </button>
               </div>
@@ -215,7 +513,9 @@ export default function CustomersPage() {
                   type="text"
                   placeholder="Customer name"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, name: e.target.value })
+                  }
                   required
                 />
                 <InputField
@@ -223,7 +523,9 @@ export default function CustomersPage() {
                   type="tel"
                   placeholder="Phone number"
                   value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, phone: e.target.value })
+                  }
                   required
                 />
                 <InputField
@@ -231,22 +533,37 @@ export default function CustomersPage() {
                   type="tel"
                   placeholder="WhatsApp number"
                   value={formData.whatsapp}
-                  onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, whatsapp: e.target.value })
+                  }
                 />
                 <InputField
                   label="Email"
                   type="email"
                   placeholder="Email address"
                   value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, email: e.target.value })
+                  }
                 />
                 <div className="flex gap-3 pt-2">
                   <button
                     type="submit"
-                    className="flex-1 bg-gradient-to-r from-green-500 to-green-600 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-2"
+                    disabled={isSubmitting}
+                    className="flex-1 bg-gradient-to-r from-green-500 to-green-600 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
                   >
-                    <Save className="w-4 h-4" />
-                    {editingCustomer ? "Update" : "Save"}
+                    {isSubmitting ? (
+                      <span className="w-4 h-4 rounded-full border-2 border-white/70 border-t-white animate-spin" />
+                    ) : (
+                      <Save className="w-4 h-4" />
+                    )}
+                    {isSubmitting
+                      ? editingCustomer
+                        ? "Updating..."
+                        : "Saving..."
+                      : editingCustomer
+                        ? "Update"
+                        : "Save"}
                   </button>
                   <button
                     type="button"
@@ -285,7 +602,9 @@ export default function CustomersPage() {
                     <h3 className="font-semibold text-gray-900 text-lg">
                       {viewingCustomer.name}
                     </h3>
-                    <p className="text-sm text-gray-500">ID: {viewingCustomer.id}</p>
+                    <p className="text-sm text-gray-500">
+                      ID: {viewingCustomer.id}
+                    </p>
                   </div>
                 </div>
                 <div className="space-y-3 text-sm">
@@ -350,88 +669,139 @@ export default function CustomersPage() {
             <table className="w-full">
               <thead className="bg-gray-50">
                 <tr>
-                  {["Name", "Email", "Phone", "WhatsApp", "Actions"].map((h) => (
-                    <th
-                      key={h}
-                      className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
-                      {h}
-                    </th>
-                  ))}
+                  {["ID", "Name", "Email", "Phone", "WhatsApp", "Actions"].map(
+                    (h) => (
+                      <th
+                        key={h}
+                        className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                      >
+                        {h}
+                      </th>
+                    )
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filteredCustomers.map((c, i) => (
-                  <CustomerRow
-                    key={c.id}
-                    customer={c}
-                    index={i}
-                    openQuotation={openQuotation}
-                    openEdit={openEdit}
-                    openView={(cust) => setViewingCustomer(cust)}
-                    deleteCustomer={() => confirmDelete(c)}
-                  />
-                ))}
+                {loadingCustomers
+                  ? // Skeleton rows
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <tr key={i}>
+                      <td className="px-6 py-4">
+                        <div className="h-4 bg-gray-200 rounded w-3/4 animate-pulse"></div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-4 bg-gray-200 rounded w-1/2 animate-pulse"></div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-4 bg-gray-200 rounded w-2/3 animate-pulse"></div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-4 bg-gray-200 rounded w-2/3 animate-pulse"></div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="h-4 bg-gray-200 rounded w-1/3 animate-pulse"></div>
+                      </td>
+                    </tr>
+                  ))
+                  : filteredCustomers.map((c, i) => (
+                    <CustomerRow
+                      key={c.id}
+                      customer={c}
+                      index={i}
+                      openQuotation={openQuotation}
+                      openEdit={openEdit}
+                      openView={(cust) => setViewingCustomer(cust)}
+                      deleteCustomer={() => confirmDelete(c)}
+                    />
+                  ))}
               </tbody>
             </table>
           </div>
 
           {/* Mobile Cards */}
           <div className="md:hidden p-4 space-y-4">
-            {filteredCustomers.map((c, i) => (
-              <div
-                key={c.id}
-                className={`p-4 rounded-xl border ${
-                  i % 2 === 0 ? "bg-white border-gray-100" : "bg-gray-50 border-transparent"
-                } shadow-sm hover:shadow-md transition-all`}
-              >
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-12 h-12 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
-                    {c.name.charAt(0).toUpperCase()}
+            {loadingCustomers
+              ? // Skeleton cards
+              Array.from({ length: 5 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="p-4 rounded-xl border bg-white shadow-sm"
+                >
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-12 h-12 bg-gray-200 rounded-full animate-pulse"></div>
+                    <div className="flex-1">
+                      <div className="h-4 bg-gray-200 rounded w-3/4 mb-2 animate-pulse"></div>
+                      <div className="h-3 bg-gray-200 rounded w-1/2 animate-pulse"></div>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-gray-900">{c.name}</h3>
-                    <p className="text-xs text-gray-500">{c.id}</p>
+                  <div className="space-y-2">
+                    <div className="h-3 bg-gray-200 rounded w-2/3 animate-pulse"></div>
+                    <div className="h-3 bg-gray-200 rounded w-1/2 animate-pulse"></div>
+                    <div className="h-3 bg-gray-200 rounded w-2/3 animate-pulse"></div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-4">
+                    <div className="h-7 bg-gray-200 rounded animate-pulse"></div>
+                    <div className="h-7 bg-gray-200 rounded animate-pulse"></div>
                   </div>
                 </div>
+              ))
+              : filteredCustomers.map((c, i) => (
+                <div
+                  key={c.id}
+                  className={`p-4 rounded-xl border ${i % 2 === 0
+                    ? "bg-white border-gray-100"
+                    : "bg-gray-50 border-transparent"
+                    } shadow-sm hover:shadow-md transition-all`}
+                >
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-12 h-12 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
+                      {c.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-gray-900">
+                        {c.name}
+                      </h3>
+                      <p className="text-xs text-gray-500">{c.id}</p>
+                    </div>
+                  </div>
 
-                <div className="space-y-2 text-sm">
-                  <div className="flex items-center gap-2 text-gray-600">
-                    <Mail className="w-4 h-4" />
-                    <span className="truncate">{c.email || "—"}</span>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex items-center gap-2 text-gray-600">
+                      <Mail className="w-4 h-4" />
+                      <span className="truncate">{c.email || "—"}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-gray-600">
+                      <Phone className="w-4 h-4" />
+                      <span>{c.phone}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-green-600">
+                      <MessageCircle className="w-4 h-4" />
+                      <span>{c.whatsapp || "—"}</span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 text-gray-600">
-                    <Phone className="w-4 h-4" />
-                    <span>{c.phone}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-green-600">
-                    <MessageCircle className="w-4 h-4" />
-                    <span>{c.whatsapp || "—"}</span>
-                  </div>
-                </div>
 
-                <div className="grid grid-cols-2 gap-2 mt-4">
-                  <button
-                    onClick={() => openEdit(c)}
-                    className="flex items-center justify-center gap-1 py-2 bg-green-100 text-green-700 rounded-lg text-xs font-medium"
-                  >
-                    <Edit3 className="w-4 h-4" />
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => openQuotation(c.id)}
-                    className="flex items-center justify-center gap-1 py-2 bg-indigo-100 text-indigo-700 rounded-lg text-xs font-medium"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Quote
-                  </button>
+                  <div className="grid grid-cols-2 gap-2 mt-4">
+                    <button
+                      onClick={() => openEdit(c)}
+                      className="flex items-center justify-center gap-1 py-2 bg-green-100 text-green-700 rounded-lg text-xs font-medium"
+                    >
+                      <Edit3 className="w-4 h-4" />
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => openQuotation(c.id)}
+                      className="flex items-center justify-center gap-1 py-2 bg-indigo-100 text-indigo-700 rounded-lg text-xs font-medium"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Quote
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
           </div>
 
           {/* Empty State */}
-          {filteredCustomers.length === 0 && (
+          {!loadingCustomers && filteredCustomers.length === 0 && (
             <div className="text-center py-12 px-4">
               {searchQuery ? (
                 <>
@@ -535,10 +905,12 @@ function CustomerRow({
 }) {
   return (
     <tr
-      className={`${
-        index % 2 === 0 ? "bg-white" : "bg-gray-50"
-      } hover:bg-gray-100 transition-colors duration-200`}
+      className={`${index % 2 === 0 ? "bg-white" : "bg-gray-50"
+        } hover:bg-gray-100 transition-colors duration-200`}
     >
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+        #{customer.id}
+      </td>
       <td className="px-6 py-4 whitespace-nowrap">
         <div className="flex items-center">
           <div className="flex-shrink-0 h-10 w-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
@@ -547,7 +919,9 @@ function CustomerRow({
             </span>
           </div>
           <div className="ml-4">
-            <div className="text-sm font-medium text-gray-900">{customer.name}</div>
+            <div className="text-sm font-medium text-gray-900">
+              {customer.name}
+            </div>
           </div>
         </div>
       </td>
@@ -618,6 +992,8 @@ function QuotationModal({
   const [items, setItems] = useState<QuotationItem[]>([]);
   const [tax] = useState(18);
   const [showCamera, setShowCamera] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [inventory, setInventory] = useState<any[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -663,6 +1039,63 @@ function QuotationModal({
       }
     };
   }, []);
+
+  // Fetch Inventory
+  useEffect(() => {
+    const fetchInventory = async () => {
+      try {
+        const url = `${INVENTORY_SCRIPT_URL}?spreadsheetId=${INVENTORY_SPREADSHEET_ID}&sheet=${INVENTORY_SHEET_NAME}`;
+        const res = await fetch(url);
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          const rows = json.data.slice(1);
+          const products = rows.map((r: any[]) => {
+            const rawPrice = r[9];
+            const parsedPrice = typeof rawPrice === 'number' ? rawPrice : parseFloat(String(rawPrice || "0").replace(/[^0-9.-]+/g, ""));
+            return {
+              code: String(r[4] || "").trim(),
+              name: String(r[3] || "").trim(),
+              price: isNaN(parsedPrice) ? 0 : parsedPrice,
+              image: String(r[2] || "").trim(),
+            };
+          }).filter((p: any) => p.code);
+          setInventory(products);
+          console.log("Inventory Loaded (Customers):", products.length, "items");
+        }
+      } catch (e) {
+        console.error("Failed to fetch inventory:", e);
+      }
+    };
+    fetchInventory();
+  }, []);
+
+  const handleProductCodeSearch = (itemId: string, code: string) => {
+    alert(`🔍 Search triggered! Code: "${code}"`);
+    if (!code) return;
+
+    const searchCode = code.trim().toLowerCase();
+    console.log("Searching for code:", searchCode);
+    console.log("Inventory size:", inventory.length);
+
+    if (inventory.length === 0) {
+      alert("⚠️ Inventory not loaded yet! Please wait.");
+      return;
+    }
+
+    const match = inventory.find((p) => p.code.toLowerCase() === searchCode);
+    console.log("Match found:", match);
+
+    if (match) {
+      alert(`✅ Found: ${match.name}\nPrice: ₹${match.price}\nImage: ${match.image ? 'Yes' : 'No'}`);
+      updateItem(itemId, {
+        customTitle: match.name,
+        price: Number(match.price) || 0,
+        customPhoto: match.image || undefined
+      });
+    } else {
+      alert("Product code not found in inventory.");
+    }
+  };
 
   const addCustomItem = () => {
     const id = `custom-${Date.now()}`;
@@ -782,11 +1215,15 @@ function QuotationModal({
   const taxAmount = Math.round((subtotal * tax) / 100);
   const total = subtotal + taxAmount;
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (items.length === 0) {
       alert("Add at least one item");
       return;
     }
+
+    if (saving) return;
+    setSaving(true);
+
     const quotation: Quotation = {
       id: `quot-${Date.now()}`,
       customerId,
@@ -801,9 +1238,68 @@ function QuotationModal({
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    createQuotation(quotation);
-    alert("Quotation saved as draft!");
-    onClose();
+
+    try {
+      const customer = customers.find((c) => c.id === customerId);
+      const timestamp = new Date().toISOString();
+
+      for (let index = 0; index < items.length; index++) {
+        const item = items[index];
+        const product = products.find((p) => p.id === item.productId);
+
+        const productName =
+          (product?.title || item.customTitle || "").toString().trim() ||
+          `Item ${index + 1}`;
+
+        const qty = Number(item.quantity) || 0;
+        const price = Number(item.price) || 0;
+        const discount = Number(item.discount) || 0;
+        const itemSubtotal = qty * price - discount;
+
+        let productImageUrl = "";
+        if (item.customPhoto) {
+          if (item.customPhoto.startsWith("data:")) {
+            try {
+              productImageUrl = await uploadImageToDrive(
+                item.customPhoto,
+                `${quotation.id}-${index + 1}.jpg`
+              );
+            } catch (err) {
+              console.error("Image upload failed", err);
+            }
+          } else {
+            productImageUrl = item.customPhoto;
+          }
+        }
+
+        const logRow = [
+          timestamp,
+          customerId,
+          customer?.name || "",
+          customer?.phone || "",
+          customer?.whatsapp || "",
+          customer?.email || "",
+          productName,
+          productImageUrl,
+          qty,
+          price,
+          discount,
+          itemSubtotal,
+          tax,
+        ];
+
+        await appendQuotationLogRow(logRow);
+      }
+
+      createQuotation(quotation);
+      alert("Quotation saved and uploaded!");
+      onClose();
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || "Failed to save quotation");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const customer = customers.find((c) => c.id === customerId);
@@ -868,6 +1364,36 @@ function QuotationModal({
                               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
                             />
                           )}
+
+                          {/* Product Code Search */}
+                          <div className="mt-2 flex gap-2">
+                            <input
+                              type="text"
+                              placeholder="Search Product Code (e.g. 123S)"
+                              className="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:bg-white transition-colors"
+                              onKeyDown={(e) => {
+                                console.log("Key pressed:", e.key);
+                                if (e.key === 'Enter') {
+                                  console.log("Enter key detected!");
+                                  const value = (e.target as HTMLInputElement).value;
+                                  console.log("Input value:", value);
+                                  handleProductCodeSearch(item.productId, value);
+                                }
+                              }}
+                            />
+                            <button
+                              onClick={(e) => {
+                                console.log("Search button clicked!");
+                                const input = e.currentTarget.previousElementSibling as HTMLInputElement;
+                                console.log("Input value:", input.value);
+                                handleProductCodeSearch(item.productId, input.value);
+                              }}
+                              className="bg-gray-800 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-black transition-colors"
+                            >
+                              Search
+                            </button>
+                          </div>
+
                           <p className="text-xs text-gray-500 mt-1">
                             ₹{Number(item.price || 0).toLocaleString()}
                           </p>
@@ -927,12 +1453,37 @@ function QuotationModal({
                             {item.customPhoto ? (
                               <div className="relative group">
                                 <div className="w-20 h-20 rounded-xl overflow-hidden border-2 border-green-200 shadow-md">
-                                  <Image
-                                    src={item.customPhoto}
-                                    alt="Item photo"
-                                    fill
-                                    className="object-cover"
-                                  />
+                                  {(() => {
+                                    const original = item.customPhoto || "";
+                                    if (!original) return null;
+
+                                    if (original.startsWith("data:image/") || original.startsWith("blob:")) {
+                                      return (
+                                        <img
+                                          src={original}
+                                          alt="Item photo"
+                                          className="w-full h-full object-cover"
+                                        />
+                                      );
+                                    }
+
+                                    const displayUrl = getDisplayableImageUrl(original) || original;
+
+                                    return (
+                                      <img
+                                        src={displayUrl}
+                                        alt="Item photo"
+                                        className="w-full h-full object-cover"
+                                        referrerPolicy="no-referrer"
+                                        loading="lazy"
+                                        onError={(e) => {
+                                          if (displayUrl !== original && (e.target as HTMLImageElement).src !== original) {
+                                            (e.target as HTMLImageElement).src = original;
+                                          }
+                                        }}
+                                      />
+                                    );
+                                  })()}
                                 </div>
                                 <div className="absolute -top-1 -right-1 w-6 h-6 bg-green-500 rounded-full flex items-center justify-center shadow-lg">
                                   <svg
@@ -1077,9 +1628,17 @@ function QuotationModal({
               <div className="flex gap-2 mt-3 p-1">
                 <button
                   onClick={handleSubmit}
-                  className="flex-1 bg-gradient-to-r from-blue-500 to-purple-600 text-white py-1.5 rounded-lg font-semibold text-xs"
+                  disabled={saving}
+                  className="flex-1 bg-gradient-to-r from-blue-500 to-purple-600 text-white py-1.5 rounded-lg font-semibold text-xs disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  Save as Draft
+                  {saving ? (
+                    <>
+                      <div className="w-3 h-3 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    "Save as Draft"
+                  )}
                 </button>
                 <button
                   onClick={onClose}
