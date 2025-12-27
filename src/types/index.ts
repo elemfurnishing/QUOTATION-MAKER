@@ -44,6 +44,7 @@ export interface QuotationItem {
 export interface Quotation {
   id: string;
   customerId: string;
+  customerName?: string;
   employeeId: string;
   items: QuotationItem[];
   subtotal: number;

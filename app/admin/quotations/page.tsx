@@ -197,6 +197,7 @@ export default function QuotationsPage() {
         .map((row: any[], idx: number): Quotation => {
           const timestamp = row?.[0]?.toString() || "";
           const customerId = row?.[1]?.toString() || "";
+          const customerName = row?.[2]?.toString() || "";
           const productName = row?.[6]?.toString() || "";
           const productImageUrl = row?.[7]?.toString() || "";
           const qty = Number(row?.[8] ?? 0) || 0;
@@ -225,6 +226,7 @@ export default function QuotationsPage() {
           return {
             id: `quot-sheet-${idBase}-${idx + 1}`,
             customerId,
+            customerName,
             employeeId: "",
             items: [item],
             subtotal,
@@ -266,9 +268,11 @@ export default function QuotationsPage() {
 
     const query = searchQuery.toLowerCase().trim();
     return quotations.filter((quot) => {
-      const customer = customers.find((c) => c.id === quot.customerId);
-      const customerName = customer?.name?.toLowerCase() || "";
-      const customerPhone = customer?.phone || "";
+      // Use customerName from quotation if available, otherwise look up in customers
+      const customerName = quot.customerName?.toLowerCase() || 
+                          customers.find((c) => c.id === quot.customerId)?.name?.toLowerCase() || 
+                          "";
+      const customerPhone = customers.find((c) => c.id === quot.customerId)?.phone || "";
       const amount = quot.total.toString();
       const date = new Date(quot.createdAt).toLocaleDateString().toLowerCase();
       const serialNo = quot.serialNo?.toLowerCase() || "";
@@ -311,6 +315,7 @@ export default function QuotationsPage() {
         return {
           id: `serial-${serialNo}`,
           customerId: latest.customerId,
+          customerName: latest.customerName,
           employeeId: latest.employeeId,
           items,
           subtotal,
@@ -339,7 +344,11 @@ export default function QuotationsPage() {
   }, [filteredQuotations]);
 
   // Helper functions
-  const getCustomerName = (customerId: string) => {
+  const getCustomerName = (customerId: string, quotation?: Quotation) => {
+    // First, try to use customerName from quotation if available
+    if (quotation?.customerName) return quotation.customerName;
+    
+    // Otherwise, fall back to looking up in customers array
     if (!customers.length) return "Loading...";
     const customer = customers.find((c) => c.id === customerId);
     if (!customer) return `Customer ${customerId}`;
@@ -1709,11 +1718,11 @@ export default function QuotationsPage() {
                       <td className="py-4 px-6">
                         <div className="flex items-center gap-3">
                           <div className="w-9 h-9 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                            {getCustomerName(quot.customerId)[0]}
+                            {getCustomerName(quot.customerId, quot)[0]}
                           </div>
                           <div>
                             <p className="font-medium text-slate-900">
-                              {getCustomerName(quot.customerId)}
+                              {getCustomerName(quot.customerId, quot)}
                             </p>
                             <p className="text-xs text-slate-500">
                               {getCustomerPhone(quot.customerId)}
@@ -1797,11 +1806,11 @@ export default function QuotationsPage() {
                 <div className="flex justify-between items-start mb-3">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white text-sm font-bold">
-                      {getCustomerName(quot.customerId)[0]}
+                      {getCustomerName(quot.customerId, quot)[0]}
                     </div>
                     <div>
                       <p className="font-semibold text-slate-900 text-sm">
-                        {getCustomerName(quot.customerId)}
+                        {getCustomerName(quot.customerId, quot)}
                       </p>
                       <p className="text-xs text-blue-600 font-mono font-semibold">
                         {quot.serialNo || "—"}

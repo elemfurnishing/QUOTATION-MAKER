@@ -159,6 +159,7 @@ export default function HistoryPage() {
         .map((row: any[], idx: number): Quotation => {
           const timestamp = row?.[0]?.toString() || "";
           const customerId = row?.[1]?.toString() || "";
+          const customerName = row?.[2]?.toString() || "";
           const productName = row?.[6]?.toString() || "";
           const productImageUrl = row?.[7]?.toString() || "";
           const qty = Number(row?.[8] ?? 0) || 0;
@@ -187,6 +188,7 @@ export default function HistoryPage() {
           return {
             id: `quot-sheet-${idBase}-${idx + 1}`,
             customerId,
+            customerName,
             employeeId: "",
             items: [item],
             subtotal,
@@ -261,7 +263,11 @@ export default function HistoryPage() {
   const [availableQtyMap, setAvailableQtyMap] = useState<Record<string, number>>({});
 
   // Get customer name by ID
-  const getCustomerName = (customerId: string) => {
+  const getCustomerName = (customerId: string, quotation?: Quotation) => {
+    // First, try to use customerName from quotation if available
+    if (quotation?.customerName) return quotation.customerName;
+    
+    // Otherwise, fall back to looking up in customers array
     if (!customers.length) return "Loading...";
     const customer = customers.find((c) => c.id === customerId);
     if (!customer) {
@@ -277,7 +283,7 @@ export default function HistoryPage() {
 
     const searchLower = searchTerm.toLowerCase();
     const matchesId = quot.customerId.toLowerCase().includes(searchLower);
-    const customerName = getCustomerName(quot.customerId).toLowerCase();
+    const customerName = (quot.customerName || getCustomerName(quot.customerId, quot)).toLowerCase();
     const matchesName = customerName.includes(searchLower);
 
     return matchesId || matchesName;
@@ -365,6 +371,7 @@ export default function HistoryPage() {
       return {
         id: `serial-${serialNo}`,
         customerId: latest.customerId,
+        customerName: latest.customerName,
         employeeId: latest.employeeId,
         items,
         subtotal,
@@ -1794,10 +1801,10 @@ export default function HistoryPage() {
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                            {getCustomerName(quot.customerId)[0]}
+                            {getCustomerName(quot.customerId, quot)[0]}
                           </div>
                           <span className="text-sm font-medium text-gray-900">
-                            {getCustomerName(quot.customerId)}
+                            {getCustomerName(quot.customerId, quot)}
                           </span>
                         </div>
                       </td>
@@ -1908,11 +1915,11 @@ export default function HistoryPage() {
                 </div>
                 <div className="flex items-center gap-3 mb-3">
                   <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
-                    {getCustomerName(quot.customerId)[0]}
+                    {getCustomerName(quot.customerId, quot)[0]}
                   </div>
                   <div>
                     <div className="font-medium text-gray-900">
-                      {getCustomerName(quot.customerId)}
+                      {getCustomerName(quot.customerId, quot)}
                     </div>
                     <div className="text-xs text-gray-500">
                       {new Date(quot.createdAt).toLocaleDateString()}
